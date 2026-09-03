@@ -675,22 +675,30 @@ g.add_edge("reducer", END)
 
 
 # Step D: Resilient Checkpointer Setup
-# If a valid PostgreSQL connection is configured, use PostgresSaver for persistent thread states.
-# Otherwise, fall back gracefully to in-memory MemorySaver so backend.py can run anywhere without errors.
+# For FastAPI streaming servers, an in-memory checkpointer is rock-solid and eliminates
+# SSL connection timeouts, dead pool sockets, and external database latency during runs.
+# Deliverables (writeup.md and images) are persisted to disk automatically upon completion.
+USE_POSTGRES_CHECKPOINTER = os.getenv("USE_POSTGRES_CHECKPOINTER", "false").lower() in ("1", "true", "yes")
+
 checkpointer = None
-if DATABASE_URL:
+if USE_POSTGRES_CHECKPOINTER and DATABASE_URL:
     try:
-        _conn = psycopg.connect(
+        from psycopg_pool import ConnectionPool
+        pool = ConnectionPool(
             DATABASE_URL,
-            autocommit=True,
-            row_factory=dict_row,
+            min_size=1,
+            max_size=5,
+            kwargs={"autocommit": True},
+            check=ConnectionPool.check_connection,
         )
-        checkpointer = PostgresSaver(_conn)
+        checkpointer = PostgresSaver(pool)
         checkpointer.setup()
+        print("[Notice] Using PostgreSQL checkpointer with ConnectionPool.")
     except Exception as err:
-        print(f"[Notice] PostgreSQL checkpointer connection failed ({err}). Falling back to MemorySaver.")
+        print(f"[Warning] PostgreSQL checkpointer setup failed ({err}). Falling back to MemorySaver.")
         checkpointer = MemorySaver()
 else:
+    # MemorySaver is zero-latency, thread-safe, and never closes SSL connections
     checkpointer = MemorySaver()
 
 # Final Compiled Agent Workflow

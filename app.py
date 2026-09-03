@@ -770,10 +770,10 @@ def stream_workflow(
 
     except GeneratorExit:
         logger.info(
-            "Browser disconnected from run %s",
+            "Browser disconnected from run %s. Stream stopped cleanly.",
             run_id,
         )
-        raise
+        return
 
     except Exception as error:
         logger.exception(

@@ -127,60 +127,6 @@
                 </div>
 
                 <form id="runForm">
-                    <div class="composer-settings-bar">
-                        <button
-                            type="button"
-                            id="settingsToggle"
-                            class="settings-toggle-button"
-                            aria-expanded="false"
-                        >
-                            <span>⚙ Editorial Settings</span>
-                            <span class="settings-summary" id="settingsSummary">Auto Format · General Readers · Conversational</span>
-                            <span class="toggle-icon" id="settingsToggleIcon">▾</span>
-                        </button>
-
-                        <div class="composer-settings-drawer" id="composerSettings" hidden>
-                            <div class="setting-field">
-                                <label for="genreSelect">Writeup Format / Style</label>
-                                <select id="genreSelect">
-                                    <option value="auto" selected>Auto-detect from topic</option>
-                                    <option value="explainer">Deep-Dive Explainer</option>
-                                    <option value="story_narrative">Personal Story / Narrative</option>
-                                    <option value="thought_leadership">Thought Leadership</option>
-                                    <option value="tutorial">Practical Tutorial / How-To</option>
-                                    <option value="opinion_editorial">Opinion / Editorial Essay</option>
-                                    <option value="case_study">Case Study Analysis</option>
-                                    <option value="guide">Comprehensive Guide / Playbook</option>
-                                    <option value="news_roundup">News & Trends Roundup</option>
-                                    <option value="comparison">Side-by-Side Comparison</option>
-                                </select>
-                            </div>
-
-                            <div class="setting-field">
-                                <label for="audienceSelect">Target Audience</label>
-                                <select id="audienceSelect">
-                                    <option value="General Readers" selected>General Readers</option>
-                                    <option value="Founders, Executives & Business Leaders">Founders & Executives</option>
-                                    <option value="Software Engineers & Tech Leads">Developers & Architects</option>
-                                    <option value="Designers, Creators & Storytellers">Creators & Writers</option>
-                                    <option value="Students & Curious Learners">Students & Learners</option>
-                                </select>
-                            </div>
-
-                            <div class="setting-field">
-                                <label for="toneSelect">Voice & Tone</label>
-                                <select id="toneSelect">
-                                    <option value="Conversational & Insightful" selected>Conversational & Insightful</option>
-                                    <option value="Candid, direct and engaging">Candid & Engaging</option>
-                                    <option value="Analytical, rigorous and data-backed">Analytical & Rigorous</option>
-                                    <option value="Inspiring, reflective and philosophical">Inspiring & Reflective</option>
-                                    <option value="Witty, sharp and entertaining">Witty & Sharp</option>
-                                    <option value="Warm, accessible and empathetic">Warm & Approachable</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
                     <div class="textarea-wrapper">
                         <textarea
                             id="topicInput"
@@ -198,6 +144,50 @@
                             <span class="char-counter" id="charCounter">
                                 0 / 1000
                             </span>
+                        </div>
+                    </div>
+
+                    <!-- Modern Editorial Settings Bar (cleanly placed directly below textarea) -->
+                    <div class="composer-editorial-bar">
+                        <div class="editorial-pills">
+                            <div class="editorial-pill-item">
+                                <span class="pill-label">Format:</span>
+                                <select id="genreSelect" class="pill-select" aria-label="Writeup Format">
+                                    <option value="auto" selected>Auto-detect</option>
+                                    <option value="explainer">Deep-Dive Explainer</option>
+                                    <option value="story_narrative">Personal Story / Narrative</option>
+                                    <option value="thought_leadership">Thought Leadership</option>
+                                    <option value="tutorial">Tutorial / How-To</option>
+                                    <option value="opinion_editorial">Opinion / Editorial</option>
+                                    <option value="case_study">Case Study</option>
+                                    <option value="guide">Comprehensive Guide</option>
+                                    <option value="news_roundup">News Roundup</option>
+                                    <option value="comparison">Side-by-Side Comparison</option>
+                                </select>
+                            </div>
+
+                            <div class="editorial-pill-item">
+                                <span class="pill-label">Audience:</span>
+                                <select id="audienceSelect" class="pill-select" aria-label="Target Audience">
+                                    <option value="General Readers" selected>General Readers</option>
+                                    <option value="Founders, Executives & Business Leaders">Founders & Executives</option>
+                                    <option value="Software Engineers & Tech Leads">Developers & Architects</option>
+                                    <option value="Designers, Creators & Storytellers">Creators & Writers</option>
+                                    <option value="Students & Curious Learners">Students & Learners</option>
+                                </select>
+                            </div>
+
+                            <div class="editorial-pill-item">
+                                <span class="pill-label">Tone:</span>
+                                <select id="toneSelect" class="pill-select" aria-label="Voice and Tone">
+                                    <option value="Conversational & Insightful" selected>Conversational</option>
+                                    <option value="Candid, direct and engaging">Candid & Engaging</option>
+                                    <option value="Analytical, rigorous and data-backed">Analytical & Rigorous</option>
+                                    <option value="Inspiring, reflective and philosophical">Inspiring & Reflective</option>
+                                    <option value="Witty, sharp and entertaining">Witty & Sharp</option>
+                                    <option value="Warm, accessible and empathetic">Warm & Approachable</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
 
@@ -238,8 +228,10 @@
                                 class="cancel-button"
                                 type="button"
                                 hidden
+                                title="Stop active agent execution"
                             >
-                                Stop
+                                <span class="btn-icon">■</span>
+                                <span>Stop execution</span>
                             </button>
 
                             <button
@@ -247,8 +239,8 @@
                                 class="run-button"
                                 type="submit"
                             >
-                                <span>Run agent</span>
-                                <span>➜</span>
+                                <span id="runButtonText">Run agent</span>
+                                <span id="runButtonIcon">➜</span>
                             </button>
                         </div>
                     </div>
@@ -266,14 +258,27 @@
                             <h2>Agent activity</h2>
                         </div>
 
-                        <div
-                            id="progressRing"
-                            class="progress-ring"
-                            style="--progress: 0"
-                        >
-                            <span id="progressText">
-                                0%
-                            </span>
+                        <div class="panel-header-actions">
+                            <button
+                                id="executionStopButton"
+                                class="stop-execution-button"
+                                type="button"
+                                hidden
+                                title="Stop active execution"
+                            >
+                                <span class="btn-icon">■</span>
+                                <span>Stop</span>
+                            </button>
+
+                            <div
+                                id="progressRing"
+                                class="progress-ring"
+                                style="--progress: 0"
+                            >
+                                <span id="progressText">
+                                    0%
+                                </span>
+                            </div>
                         </div>
                     </div>
 

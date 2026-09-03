@@ -21,13 +21,13 @@ const runForm = document.getElementById("runForm");
 const topicInput = document.getElementById("topicInput");
 const charCounter = document.getElementById("charCounter");
 const runButton = document.getElementById("runButton");
+const runButtonText = document.getElementById("runButtonText");
+const runButtonIcon = document.getElementById("runButtonIcon");
 const cancelButton = document.getElementById("cancelButton");
+const executionStopButton = document.getElementById("executionStopButton");
 const newRunButton = document.getElementById("newRunButton");
 
 // Editorial settings controls
-const settingsToggle = document.getElementById("settingsToggle");
-const composerSettings = document.getElementById("composerSettings");
-const settingsSummary = document.getElementById("settingsSummary");
 const genreSelect = document.getElementById("genreSelect");
 const audienceSelect = document.getElementById("audienceSelect");
 const toneSelect = document.getElementById("toneSelect");
@@ -242,7 +242,23 @@ function resetInterface() {
 function setRunningState(isRunning) {
     topicInput.disabled = isRunning;
     runButton.disabled = isRunning;
-    cancelButton.hidden = !isRunning;
+
+    if (cancelButton) {
+        cancelButton.hidden = !isRunning;
+    }
+    if (executionStopButton) {
+        executionStopButton.hidden = !isRunning;
+    }
+
+    if (isRunning) {
+        runButton.classList.add("running");
+        if (runButtonText) runButtonText.textContent = "Writing...";
+        if (runButtonIcon) runButtonIcon.textContent = "⏳";
+    } else {
+        runButton.classList.remove("running");
+        if (runButtonText) runButtonText.textContent = "Run agent";
+        if (runButtonIcon) runButtonIcon.textContent = "➜";
+    }
 
     if (isRunning && runBadge) {
         runBadge.textContent = "Running";
@@ -779,39 +795,45 @@ topicInput.addEventListener("input", () => {
     charCounter.textContent = `${len} / 1000`;
 });
 
-// Editorial Settings Drawer toggle
-settingsToggle.addEventListener("click", () => {
-    const isHidden = composerSettings.hidden;
-    composerSettings.hidden = !isHidden;
-    settingsToggle.setAttribute("aria-expanded", String(isHidden));
-});
-
-// Update editorial settings summary label dynamically
-function updateSettingsSummary() {
-    const genreText = genreSelect.options[genreSelect.selectedIndex].text
-        .split("/")[0]
-        .trim();
-    const audienceText = audienceSelect.options[
-        audienceSelect.selectedIndex
-    ].text
-        .split("&")[0]
-        .trim();
-    const toneText = toneSelect.options[toneSelect.selectedIndex].text
-        .split("&")[0]
-        .trim();
-    settingsSummary.textContent = `${genreText} · ${audienceText} · ${toneText}`;
-}
-
-genreSelect.addEventListener("change", updateSettingsSummary);
-audienceSelect.addEventListener("change", updateSettingsSummary);
-toneSelect.addEventListener("change", updateSettingsSummary);
-
-// Stop button handler
-cancelButton.addEventListener("click", () => {
+// Unified Stop Execution Handler
+function handleStopExecution() {
     if (abortController) {
         abortController.abort();
+        abortController = null;
     }
-});
+
+    setRunningState(false);
+    showToast("Execution stopped.");
+
+    if (runBadge) {
+        runBadge.textContent = "Stopped";
+        runBadge.className = "run-badge stopped";
+    }
+
+    // Add clear visual timeline entry
+    const existingStopped = document.querySelector(".timeline-item.stopped");
+    if (!existingStopped && timeline) {
+        const stopItem = document.createElement("div");
+        stopItem.className = "timeline-item stopped";
+        stopItem.innerHTML = `
+            <div class="timeline-marker">
+                <span>■</span>
+            </div>
+            <div class="timeline-content">
+                <div class="timeline-header">
+                    <h4>Execution Stopped</h4>
+                    <span class="timeline-badge stopped">Halted</span>
+                </div>
+                <p>Execution was stopped by user request. You can adjust your topic or click Run again.</p>
+            </div>
+        `;
+        timeline.prepend(stopItem);
+    }
+}
+
+// Stop button handlers
+cancelButton?.addEventListener("click", handleStopExecution);
+executionStopButton?.addEventListener("click", handleStopExecution);
 
 // New Article button handler
 newRunButton.addEventListener("click", () => {
