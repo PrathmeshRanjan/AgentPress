@@ -2,7 +2,7 @@
 
 A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates technical writeups and essays using LangGraph, FastAPI, and Docker.
 
-[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [System Architecture](#system-architecture) • [Graph and Subgraph Design](#graph-and-subgraph-design) • [Multi-Agent Execution Pipeline](#multi-agent-execution-pipeline) • [Features](#features) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally) • [API Reference](#api-reference)
+[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Reducer Subgraph Deep Dive](#reducer-subgraph-deep-dive) • [Data Contracts & Validation](#data-contracts-and-validation) • [Resilience & Fallback](#resilience-and-fault-tolerance) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally)
 
 ---
 
@@ -16,87 +16,140 @@ Hosted on an AWS EC2 instance (`ap-south-1`) inside a Docker container, with con
 
 ---
 
-## Overview
+## Architecture Overview
 
-Generating long-form articles with a single LLM prompt often leads to repetitive phrasing, shallow reasoning, hallucinated facts, and slow sequential generation.
-
-AgentPress structures the writing process as a coordinated multi-agent workflow. Built on LangGraph StateGraphs, it separates responsibilities across specialized agents:
-- Categorizing whether real-time web research is required
-- Retrieving and deduplicating authoritative sources
-- Breaking the topic into a structured, granular section plan
-- Drafting planned sections in parallel using a map-reduce pattern
-- Executing a compiled reducer subgraph to merge content, plan image placements, and synthesize visuals
-- Assembling and formatting the final document
-
-All execution updates, worker activities, and intermediate steps stream to the web client in real time via Server-Sent Events (SSE).
-
----
-
-## System Architecture
-
-The architecture consists of three main layers: the client interface, the FastAPI backend with streaming orchestration, and the LangGraph multi-agent execution engine featuring nested subgraphs.
+AgentPress separates responsibilities across specialized nodes in a LangGraph StateGraph, using dynamic worker fan-out for drafting and an independent compiled subgraph for final reduction, image placement, and synthesis.
 
 ```mermaid
 flowchart TD
-    User([User Prompt & Editorial Preferences]) -->|HTTP POST| FastAPIServer[FastAPI Server / Stream Manager]
-    FastAPIServer -->|SSE Stream Updates| WebClient[Web Interface]
+    User(["User Prompt & Preferences"]) --> FastAPIServer["FastAPI Server & Stream Manager"]
+    FastAPIServer -->|"SSE Stream Events"| WebClient["Web Client Interface"]
+    FastAPIServer -->|"Invoke Graph"| RouterNode
 
-    subgraph MainGraph [LangGraph Main StateGraph]
-        Router[1. Router Node<br/>Determines mode & search queries] -->|needs_research = true| Research[2. Research Node<br/>Tavily Web Search & Deduplication]
-        Router -->|needs_research = false| Orchestrator[3. Orchestrator Node<br/>Generates structured section outline]
-        Research --> Orchestrator
+    subgraph MainStateGraph ["LangGraph Main Graph (StateGraph)"]
+        RouterNode["1. router_node<br/>Evaluates topic & decides research mode"]
+        
+        RouterNode -->|"needs_research = true"| ResearchNode["2. research_node<br/>Tavily Search & Evidence Extraction"]
+        RouterNode -->|"needs_research = false"| OrchestratorNode["3. orchestrator_node<br/>Architects master Plan & Tasks"]
+        ResearchNode --> OrchestratorNode
 
-        Orchestrator -->|LangGraph Send Fan-Out| Worker1[Worker 1: Section 1]
-        Orchestrator -->|LangGraph Send Fan-Out| Worker2[Worker 2: Section 2]
-        Orchestrator -->|LangGraph Send Fan-Out| WorkerN[Worker N: Section N]
+        OrchestratorNode -->|"LangGraph Send() Dynamic Fan-Out"| FanoutFork{"fanout()"}
+        FanoutFork -->|"Task 1 Payload"| WorkerNode1["worker_node (Section 1)"]
+        FanoutFork -->|"Task 2 Payload"| WorkerNode2["worker_node (Section 2)"]
+        FanoutFork -->|"Task N Payload"| WorkerNodeN["worker_node (Section N)"]
 
-        subgraph ReducerSubgraph [Nested Reducer Subgraph: 'reducer']
-            MergeContent[4a. merge_content<br/>Sort by task.id & construct body] --> DecideImages[4b. decide_images<br/>Analyze density & place [[IMAGE_X]] tags]
-            DecideImages --> GenerateImages[4c. generate_and_place_images<br/>Gemini 2.5 Flash Image & fallback callouts]
+        subgraph ReducerSubgraph ["Nested Subgraph: reducer_subgraph (StateGraph)"]
+            MergeNode["4a. merge_content<br/>Sort by task.id & build unified draft"]
+            DecideImagesNode["4b. decide_images<br/>Analyze density & place image tags"]
+            GenerateImagesNode["4c. generate_and_place_images<br/>Gemini 2.5 Flash Image & fallback callouts"]
+
+            MergeNode --> DecideImagesNode
+            DecideImagesNode --> GenerateImagesNode
         end
 
-        Worker1 --> ReducerSubgraph
-        Worker2 --> ReducerSubgraph
-        WorkerN --> ReducerSubgraph
+        WorkerNode1 -->|"sections: (1, md)"| MergeNode
+        WorkerNode2 -->|"sections: (2, md)"| MergeNode
+        WorkerNodeN -->|"sections: (N, md)"| MergeNode
 
-        ReducerSubgraph --> FinalAssembly[5. Final Assembly & Markdown Export]
+        GenerateImagesNode --> EndNode(["END: Final Article Ready"])
     end
 
-    FastAPIServer --> MainGraph
-
-    subgraph Resilience [Fallback Handling]
-        Mistral[Primary: Mistral Small] -.->|HTTP 429 Rate Limit| GeminiFallback[Fallback: Gemini 2.5 Flash]
+    subgraph ResilienceEngine ["Model Layer & 429 Fallback"]
+        PrimaryModel["Primary: Mistral Small"] -.->|"HTTP 429 Rate Limit"| FallbackModel["Fallback: Gemini 2.5 Flash"]
     end
 
-    subgraph Persistence [Data Layer]
-        Storage[(Host EBS Volumes<br/>outputs/ & images/)]
-        Checkpointer[(MemorySaver / Postgres ConnectionPool)]
+    subgraph StatePersistence ["State & Storage Layer"]
+        CheckpointerChoice["Checkpointer: MemorySaver (Default) / PostgresSaver"]
+        VolumeMounts["Host Volumes: outputs/ (Markdown & meta.json) and images/"]
     end
 
-    MainGraph --> Persistence
-    MainGraph -.-> Resilience
+    RouterNode -.-> ResilienceEngine
+    ResearchNode -.-> ResilienceEngine
+    OrchestratorNode -.-> ResilienceEngine
+    WorkerNode1 -.-> ResilienceEngine
+    DecideImagesNode -.-> ResilienceEngine
 ```
 
 ---
 
-## Graph and Subgraph Design
+## Backend Architecture (`backend.py`)
 
-A central architectural pattern in AgentPress is the use of **nested LangGraph Subgraphs** to decouple post-processing, assembly, and multimodal illustration from the fan-out drafting loop.
+The core execution engine is defined entirely within `backend.py`. It uses LangGraph to manage state, routing, concurrency, and sub-pipeline execution.
 
-### 1. The Parent StateGraph (`g`)
-The primary graph handles high-level routing, evidence collection, outline architecture, and parallel dispatch:
-- **`router`**: Evaluates topic constraints and decides research path.
-- **`research`**: Conducts web queries and returns verified evidence packs.
-- **`orchestrator`**: Plans the master article blueprint.
-- **`worker`**: Dynamically mapped via conditional `fanout` using LangGraph's `Send()` API across all planned sections.
-- **`reducer`**: A compiled subgraph mounted directly as a node in the parent graph:
+### 1. State Definition (`State`)
+The state channel uses a Python `TypedDict` for lightweight runtime updates without schema overhead:
+```python
+class State(TypedDict):
+    topic: str
+    mode: str
+    needs_research: bool
+    queries: List[str]
+    evidence: List[EvidenceItem]
+    plan: Optional[Plan]
+    sections: Annotated[List[tuple[int, str]], operator.add]
+    merged_md: str
+    md_with_placeholders: str
+    image_specs: List[dict]
+    final: str
+```
+- **`sections` Channel:** Decorated with `Annotated[..., operator.add]` so parallel workers can asynchronously append section tuples `(task.id, section_markdown)` without state collision or race conditions.
+- **`plan` Channel:** Stores the structured editorial blueprint created by the orchestrator.
+
+---
+
+### 2. Execution Flow & Nodes
+
+#### A. Router Node (`router_node`)
+- Analyzes the requested topic, audience, and editorial style using `model.with_structured_output(RouterDecision)`.
+- Categorizes the execution path:
+  - `closed_book`: Conceptual or philosophical subjects where web retrieval is unnecessary.
+  - `hybrid`: Foundational subjects requiring fresh real-world examples, recent releases, or benchmarks.
+  - `open_book`: Time-sensitive topics (industry news, current pricing, recent events).
+- Generates 3 to 8 targeted, time-aware search queries if research is required.
+- Dynamic branching via `route_next`:
   ```python
-  g.add_node("reducer", reducer_subgraph)
+  def route_next(state: State) -> Literal["research", "orchestrator"]:
+      return "research" if state.get("needs_research") else "orchestrator"
   ```
 
-### 2. The Nested Reducer Subgraph (`reducer_graph`)
-Rather than treating document reduction as a monolithic function, the reducer is compiled as its own independent `StateGraph(State)` containing three discrete sequential stages:
+#### B. Research Node (`research_node`)
+- Queries the Tavily Search API concurrently across all generated queries.
+- Normalizes and deduplicates source URLs to prevent redundant citations.
+- Extracts structured evidence items using `model.with_structured_output(EvidencePack)`.
+- Includes a direct extraction fallback: if structured parsing encounters token constraints, raw search snippets are transformed into `EvidenceItem` records directly.
+
+#### C. Orchestrator Node (`orchestrator_node`)
+- Converts evidence and topic requirements into a master `Plan`.
+- Breaks the writeup into sequential `Task` objects, assigning each section an evocative heading, a functional role (`hook`, `argument`, `breakdown`, `reflection`), target word count (150–550 words), and concrete narrative bullets.
+- Enforces narrative cohesion across the entire article outline before writing begins.
+
+#### D. Parallel Worker Node (`worker_node`) & Fan-Out
+- Dispatches sections using LangGraph's dynamic `Send()` API inside `fanout`:
+  ```python
+  def fanout(state: State):
+      plan = state["plan"]
+      return [
+          Send("worker", {
+              "task": task.model_dump(),
+              "plan": plan.model_dump(),
+              "evidence": [e.model_dump() for e in state.get("evidence", [])],
+              "topic": state["topic"],
+              "mode": state.get("mode", "closed_book"),
+          })
+          for task in plan.tasks
+      ]
+  ```
+- Each `worker_node` executes in parallel with access to the global outline, evidence pack, target words, and strict anti-slop prompt guidelines (forbidding generic AI filler words like "delve", "testament", "tapestry", "landscape", "in conclusion").
+- Returns `{"sections": [(task.id, section_md)]}`.
+
+---
+
+## Reducer Subgraph Deep Dive
+
+A major feature of `backend.py` is the **Reducer Subgraph** (`reducer_subgraph`). Rather than merging text in a single node, post-processing is modeled as an independent compiled StateGraph mounted directly into the main graph:
+
 ```python
+# Build the Reducer Subgraph
 reducer_graph = StateGraph(State)
 reducer_graph.add_node("merge_content", merge_content)
 reducer_graph.add_node("decide_images", decide_images)
@@ -106,82 +159,75 @@ reducer_graph.add_edge(START, "merge_content")
 reducer_graph.add_edge("merge_content", "decide_images")
 reducer_graph.add_edge("decide_images", "generate_and_place_images")
 reducer_graph.add_edge("generate_and_place_images", END)
+
 reducer_subgraph = reducer_graph.compile()
+
+# Mount into Main Graph
+g.add_node("reducer", reducer_subgraph)
 ```
 
-#### Internal Subgraph Nodes:
-1. **`merge_content`**:
-   - Collects parallel section tuples `(task.id, section_markdown)`.
-   - Sorts deterministically by `task.id`, eliminating race conditions caused by workers finishing out of order.
-   - Synthesizes the master title, subtitle, and body text.
-2. **`decide_images`**:
-   - Reviews the unified markdown draft and assesses narrative density.
-   - Emits a structured `GlobalImagePlan` specifying up to 3 image concepts, generative prompts, alt text, captions, and contextually placed `[[IMAGE_X]]` tags.
-3. **`generate_and_place_images`**:
-   - Calls Google Gemini 2.5 Flash Image to generate high-resolution illustrations.
-   - Saves generated assets to the local filesystem (`images/`) and swaps placeholder tags with markdown image syntax.
-   - **Graceful Fallback:** If image generation hits rate limits or network dropouts, automatically degrades into a styled editorial `> [Visual Note]` markdown callout box rather than breaking execution.
+### Subgraph Pipeline Stages:
+
+1. **`merge_content` (Deterministic Sorting & Assembly)**
+   - Reads the accumulated `sections` list of tuples `(task.id, section_markdown)`.
+   - Sorts strictly by `task.id`:
+     ```python
+     ordered_sections = [md for _, md in sorted(state["sections"], key=lambda x: x[0])]
+     ```
+   - Eliminates out-of-order race conditions from asynchronous workers and prefixes the master title.
+
+2. **`decide_images` (Contextual Visual Planning)**
+   - Analyzes the full assembled markdown draft.
+   - Emits a structured `GlobalImagePlan` proposing up to 3 high-impact visual assets.
+   - Identifies exact contextual paragraphs and injects image placeholder tags (`[[IMAGE_1]]`, `[[IMAGE_2]]`, `[[IMAGE_3]]`) on their own lines.
+
+3. **`generate_and_place_images` (Multimodal Synthesis & Fallback)**
+   - Iterates over planned image specifications and calls **Google Gemini 2.5 Flash Image** (`gemini-2.5-flash-image`).
+   - Cleans filenames, writes image binaries to `images/<safe_filename>.png`, and substitutes the placeholder tags with markdown image syntax.
+   - **Graceful Fallback:** If image generation hits rate limits, invalid credentials, or network errors, automatically injects a styled editorial callout box instead of failing the pipeline:
+     ```markdown
+     > 🖼️ **[Visual Note]** Caption details...
+     >
+     > *Alt:* Description of the concept...
+     >
+     > *Illustration Concept:* Generative visual prompt...
+     ```
 
 ---
 
-## Multi-Agent Execution Pipeline
+## Data Contracts and Validation
 
-### 1. Router Node (Adaptive Categorization)
-- Analyzes the input topic, target audience, and selected editorial format.
-- Classifies the topic into one of three execution modes:
-  - `closed_book`: Conceptual or philosophical topics where web retrieval is unnecessary.
-  - `hybrid`: Foundational topics requiring verification of recent developments or real-world examples.
-  - `open_book`: Time-sensitive topics (industry news, recent model releases, current benchmarks).
-- If research is needed, generates 3 to 8 targeted, temporal-aware search queries.
+All LLM structured outputs in `backend.py` use strict Pydantic v2 models with custom `@field_validator(mode="before")` pre-processors to prevent schema failures:
 
-### 2. Research Node (Web Search & Deduplication)
-- Executes search queries through the Tavily Search API.
-- Cleans and deduplicates source URLs to prevent redundant references.
-- Extracts key factual points and passes structured evidence items to the planning phase.
-- Includes a direct extraction fallback to recover citations if structured parsing encounters token constraints.
-
-### 3. Orchestrator Node (Master Blueprint Planning)
-- Converts the research evidence and topic into a comprehensive blueprint of sections.
-- Defines explicit requirements for each section: an evocative heading, a functional role (hook, argument, breakdown, reflection), target word count, and concrete narrative bullets.
-- Uses Pydantic v2 field validators (`@field_validator(mode="before")`) to normalize nested lists and irregular bullet formats emitted by the LLM.
-
-### 4. Parallel Worker Nodes (Map-Reduce via `Send()`)
-- Dispatches section tasks to concurrent worker instances using LangGraph's dynamic `Send()` API.
-- Each worker receives the section goal, bullet points, global outline context, evidence pack, tone specifications, and strict anti-slop guidelines (avoiding cliches like "in conclusion", "game-changer", "landscape").
-- State aggregation channel:
-  ```python
-  sections: Annotated[List[tuple[int, str]], operator.add]
-  ```
-  Uses `operator.add` to safely append completed sections concurrently without state collisions.
+- **`Task`:** Represents an individual section. Features `sanitize_bullets` to automatically flatten nested lists or dictionary structures emitted by LLMs into a clean `List[str]`.
+- **`Plan`:** The master blueprint containing the title, audience, tone, genre, constraints, and ordered tasks. Features `sanitize_constraints`.
+- **`RouterDecision`:** Routing verdict (`needs_research`, `mode`, `queries`). Features `sanitize_queries`.
+- **`EvidenceItem` & `EvidencePack`:** Structured search facts containing `title`, `url`, `snippet`, and `published_at`.
+- **`ImageSpec` & `GlobalImagePlan`:** Image placement blueprint containing placeholder tags, generative prompts, captions, and size configurations.
 
 ---
 
-## Technical Highlights and Resilience
+## Resilience and Fault Tolerance
 
 ### 1. Transparent 429 Rate-Limit Fallback
-Third-party API rate limits (`429 Too Many Requests`) can halt linear workflows. AgentPress wraps the primary model using LangChain's `RunnableWithFallbacks`:
-- **Primary:** `mistralai:mistral-small-latest`
-- **Fallback:** `google_genai:gemini-2.5-flash`
-If Mistral returns an HTTP 429 or provider exception at any step (routing, planning, drafting, or image planning), the workflow automatically switches to Gemini 2.5 Flash without throwing an error or restarting the pipeline.
+To protect against provider rate limits (`429 Too Many Requests`), `backend.py` uses LangChain's `RunnableWithFallbacks`:
+```python
+primary_model = init_chat_model("mistralai:mistral-small-latest")
 
-### 2. Dual Checkpointer Support
-- **MemorySaver (Default):** Zero-latency, thread-safe in-memory state tracking optimized for real-time FastAPI streaming. Eliminates SSL connection timeouts, pool exhaustion, and external database latency during streaming runs.
-- **PostgresSaver:** Optional persistent checkpointing support with `psycopg_pool.ConnectionPool` for enterprise environments where runs must survive process restarts.
+try:
+    gemini_fallback = init_chat_model("google_genai:gemini-2.5-flash")
+    model = primary_model.with_fallbacks([gemini_fallback])
+except Exception:
+    model = primary_model
+```
+If Mistral Small hits rate limits at any stage (router, research extractor, orchestrator, workers, or image planner), execution automatically fails over to Google Gemini 2.5 Flash without throwing an exception or interrupting streaming.
 
-### 3. Pydantic v2 Interceptors
-Custom `@field_validator` hooks on `Task.bullets`, `Plan.constraints`, and `RouterDecision.queries` inspect incoming LLM payloads before validation, flattening nested arrays and sanitizing malformed dictionary outputs into clean strings.
+### 2. Dual Checkpointer Architecture
+- **MemorySaver (Default):** In-memory checkpointer optimized for real-time FastAPI streaming. Eliminates database connection timeouts, SSL drops, and connection pool exhaustion.
+- **PostgresSaver:** Optional persistent checkpointer supported via `psycopg_pool.ConnectionPool` for environments requiring durable checkpoints across server restarts.
 
----
-
-## Features
-
-- **Real-Time SSE Streaming:** Live progress updates, section completion statuses, and final markdown streamed over Server-Sent Events.
-- **Immediate Execution Cancellation:** Frontend `AbortController` combined with backend generator cleanup stops active agent runs instantly upon user request.
-- **Automatic 429 Rate-Limit Fallback:** If the primary LLM provider (Mistral Small) returns an HTTP 429 rate limit error at any step, execution automatically falls back to Google Gemini 2.5 Flash without failing the run.
-- **Previous Writeups Library:** Saved writeups and metadata are indexed from disk, allowing users to browse, re-open, read, and export past articles from the sidebar.
-- **Print and PDF Export:** Media print stylesheet formatted with A4 margins, orphan and widow controls, and page-break rules for clean PDF generation via the browser print dialog.
-- **Editorial Controls:** Configurable format options (Explainer, Story, Tutorial), target audience selections, and tone settings passed directly into the planning prompt.
-- **Reading Metrics and Syntax Highlighting:** Displays word counts, estimated read times, visual counts, and syntax-highlighted code blocks with individual copy buttons.
+### 3. Environment Variable Sanitization
+On startup, `backend.py` automatically strips extraneous single quotes, double quotes, and trailing whitespace from API keys loaded via Docker `--env-file`.
 
 ---
 
@@ -203,67 +249,30 @@ Custom `@field_validator` hooks on `Task.bullets`, `Plan.constraints`, and `Rout
 
 ---
 
-## Project Structure
-
-```text
-AgentPress/
-├── app.py                     # FastAPI application, SSE streaming routes, and REST endpoints
-├── backend.py                 # LangGraph StateGraph, reducer subgraph, agent nodes, and Pydantic models
-├── Dockerfile                 # Docker container build definition
-├── .dockerignore              # Docker build exclusions
-├── requirements.txt           # Python dependencies
-├── .env.example               # Example environment configuration
-├── .github/
-│   └── workflows/
-│       └── deploy.yml         # GitHub Actions deployment workflow
-├── static/
-│   ├── css/
-│   │   └── style.css          # UI layout, typography, animations, and print styles
-│   └── js/
-│       └── app.js             # Client logic, SSE connection, DOM updates, and library handling
-├── templates/
-│   └── index.html             # Main interface template
-├── outputs/                   # Directory for generated markdown files and metadata
-└── images/                    # Directory for generated images
-```
-
----
-
 ## Getting Started Locally
 
 ### Prerequisites
-
 - Python 3.12+
-- API keys for:
-  - `MISTRAL_API_KEY` (Mistral AI)
-  - `GOOGLE_API_KEY` or `GEMINI_API_KEY` (Google AI Studio)
-  - `TAVILY_API_KEY` (Tavily Search)
+- API keys for `MISTRAL_API_KEY`, `GOOGLE_API_KEY` (or `GEMINI_API_KEY`), and `TAVILY_API_KEY`.
 
 ### 1. Clone the Repository
-
 ```bash
 git clone https://github.com/PrathmeshRanjan/AgentPress.git
 cd AgentPress
 ```
 
 ### 2. Configure Environment Variables
-
-Copy the sample environment file:
-
 ```bash
 cp .env.example .env
 ```
-
-Set your API keys inside `.env`:
-
+Populate your API keys inside `.env`:
 ```env
 MISTRAL_API_KEY=your_mistral_api_key
 GOOGLE_API_KEY=your_gemini_api_key
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-### 3. Create Virtual Environment and Install Dependencies
-
+### 3. Create Virtual Environment & Install Dependencies
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -271,25 +280,21 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 4. Run the Server
-
+### 4. Run Application
 ```bash
 python app.py
 ```
-
-Access the application at `http://localhost:8000`.
+Open `http://localhost:8000` in your browser.
 
 ---
 
 ## Running with Docker
 
-Build and run the containerized application locally:
-
 ```bash
-# Build the image
+# Build the Docker image
 docker build -t agentpress:latest .
 
-# Run container with volume mounts for outputs and images
+# Run with persistent volume mounts
 docker run -d \
   --name agentpress \
   -p 8000:8000 \
@@ -303,37 +308,9 @@ docker run -d \
 
 ## API Reference
 
-### Execution Endpoint
-- **`POST /api/run`**
-  - Starts the workflow and returns a Server-Sent Events stream.
-  - Request body:
-    ```json
-    {
-      "topic": "Comparative analysis of Kafka and Dostoevsky",
-      "genre": "explainer",
-      "audience": "General Readers",
-      "tone": "Analytical & Rigorous"
-    }
-    ```
-  - Response stream events:
-    - `stage`: Lifecycle updates for router, research, planning, writing, and reducer phases.
-    - `section_complete`: Emitted when an individual worker finishes a section.
-    - `final`: Contains completed markdown, run ID, and download link.
-    - `error`: Error details if an unhandled failure occurs.
-
-### History and Management Endpoints
-- **`GET /api/history`**: Lists past generated writeups with run IDs, titles, word counts, read times, and creation dates.
-- **`GET /api/runs/{run_id}`**: Returns the full markdown document and metadata for the requested run ID.
-- **`DELETE /api/runs/{run_id}`**: Deletes the run directory and associated assets from disk.
-- **`GET /api/runs/{run_id}/download`**: Downloads the generated markdown file directly.
-- **`GET /api/health`**: Returns system health status and workflow compilation state.
-
----
-
-## Deployment Pipeline
-
-Deployment is automated through GitHub Actions upon every push to the `main` branch:
-
-1. **Build & Authenticate:** The runner builds the Docker image and logs into Amazon ECR using AWS credentials.
-2. **Push:** The tagged image is pushed to the private Amazon ECR repository.
-3. **Deploy over SSH:** The workflow connects to the EC2 host via SSH, prunes dangling images to preserve disk space, pulls the latest image, and restarts the container with volume mounts for persistent data (`outputs/` and `images/`).
+- **`POST /api/run`**: Starts workflow execution and returns a real-time Server-Sent Events stream of stage updates, section completions, and the final deliverable.
+- **`GET /api/history`**: Lists completed writeups indexed from persistent disk storage.
+- **`GET /api/runs/{run_id}`**: Retrieves markdown and metadata for a specific writeup.
+- **`DELETE /api/runs/{run_id}`**: Deletes a writeup and its local assets from disk.
+- **`GET /api/runs/{run_id}/download`**: Direct download of the completed markdown file.
+- **`GET /api/health`**: Returns server status and LangGraph compilation state.
