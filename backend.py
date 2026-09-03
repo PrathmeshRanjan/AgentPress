@@ -605,14 +605,15 @@ def generate_and_place_images(state: State) -> dict:
 
     md = state.get("md_with_placeholders") or state["merged_md"]
     image_specs = state.get("image_specs", []) or []
-    safe_filename = _sanitize_filename(plan.blog_title)
+    base_dir = Path(__file__).resolve().parent
+    out_file = base_dir / safe_filename
 
     # If no images were planned, export the text directly
     if not image_specs:
-        Path(safe_filename).write_text(md, encoding="utf-8")
+        out_file.write_text(md, encoding="utf-8")
         return {"final": md}
 
-    images_dir = Path("images")
+    images_dir = base_dir / "images"
     images_dir.mkdir(exist_ok=True)
 
     for spec in image_specs:
@@ -642,7 +643,7 @@ def generate_and_place_images(state: State) -> dict:
         img_md = f"\n![{spec['alt']}](images/{clean_name})\n*{spec['caption']}*\n"
         md = md.replace(placeholder, img_md)
 
-    Path(safe_filename).write_text(md, encoding="utf-8")
+    out_file.write_text(md, encoding="utf-8")
     return {"final": md}
 
 
