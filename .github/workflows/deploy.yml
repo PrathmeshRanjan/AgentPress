@@ -65,12 +65,16 @@ jobs:
             echo "==> Authenticating Docker to Amazon ECR on EC2 (no AWS CLI needed)..."
             echo "$ECR_TOKEN" | docker login --username AWS --password-stdin $ECR_REGISTRY
 
-            echo "==> Pulling latest AgentPress image..."
-            docker pull $ECR_REGISTRY/$ECR_REPO:latest
-
-            echo "==> Stopping prior AgentPress container (if running)..."
+            echo "==> Stopping prior AgentPress container to release memory and ports..."
             docker stop $CONTAINER || true
             docker rm $CONTAINER || true
+
+            echo "==> Freeing disk space before pulling new image..."
+            docker system prune -f || true
+            docker image prune -af || true
+
+            echo "==> Pulling latest AgentPress image..."
+            docker pull $ECR_REGISTRY/$ECR_REPO:latest
 
             echo "==> Ensuring persistent volume directories and env file exist on host..."
             mkdir -p ~/agentpress-data/images ~/agentpress-data/outputs
