@@ -197,9 +197,9 @@ function resetInterface() {
     articlePreview.innerHTML = `
         <div class="empty-state">
             <div class="empty-icon">✎</div>
-            <h3>Your article will appear here</h3>
+            <h3>Your writeup will appear here</h3>
             <p>
-                The final result appears after every
+                The final writeup appears after every
                 section is completed.
             </p>
         </div>
