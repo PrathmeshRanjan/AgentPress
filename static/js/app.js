@@ -1074,6 +1074,9 @@ async function openPreviousWriteup(runId) {
         // Set topic input to article topic
         if (topicInput && data.topic) {
             topicInput.value = data.topic;
+            if (charCounter) {
+                charCounter.textContent = `${data.topic.length} / 1000`;
+            }
         }
 
         showToast(`Opened: ${data.title}`);

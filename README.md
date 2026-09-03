@@ -1,218 +1,207 @@
-# ✦ AgentPress — Autonomous Multi-Agent Editorial Studio
+# AgentPress
 
-<div align="center">
+A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates technical writeups and essays using LangGraph, FastAPI, and Docker.
 
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph%20v0.2+-FF6F00?style=for-the-badge&logo=chainlink&logoColor=white)](https://langchain-ai.github.io/langgraph/)
-[![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
-[![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20ECR-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white)](https://aws.amazon.com)
-[![GitHub Actions](https://img.shields.io/badge/CI%2FCD-Automated%20Deploy-2088FF?style=for-the-badge&logo=github-actions&logoColor=white)](https://github.com/features/actions)
-
-<br/>
-
-**A production-grade, real-time autonomous multi-agent publishing platform that researches, architects, parallel-drafts, and illustrates long-form technical writeups and editorial essays.**
-
-[🌐 Live Production Demo](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [🏗️ Architecture Overview](#-system-architecture) • [⚡ Key Features](#-key-features) • [🚀 Quickstart](#-getting-started-locally)
-
-</div>
+[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [System Architecture](#system-architecture) • [Multi-Agent Pipeline](#multi-agent-pipeline) • [Features](#features) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally) • [API Reference](#api-reference)
 
 ---
 
-## 🌟 Live Production Deployment
+## Live Deployment
 
-AgentPress is fully deployed and accessible in production:
+The application is deployed and accessible at:
 
-> 🔗 **Live URL:** [http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/)
-> 
-> *Hosted on AWS EC2 (`ap-south-1`) via containerized Docker architecture, with continuous deployment orchestrated through Amazon ECR and GitHub Actions.*
+**Live URL:** [http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/)
 
----
-
-## 📖 Executive Summary
-
-Writing comprehensive, authoritative long-form content (3,000+ words) with standard LLM chat interfaces frequently suffers from context window saturation, shallow reasoning, hallucinated citations, and linear generation bottlenecks.
-
-**AgentPress** solves this by treating long-form publication as a **distributed, multi-agent software engineering problem**. Built on **LangGraph StateGraphs**, AgentPress orchestrates specialized AI agents that dynamically categorize research needs, ground facts via real-time web search, architect structured section blueprints, fan out parallel drafting workers, and synthesize multimodal imagery—all streamed live to the client via Server-Sent Events (SSE).
+Hosted on an AWS EC2 instance (`ap-south-1`) inside a Docker container, with continuous deployment managed via Amazon ECR and GitHub Actions.
 
 ---
 
-## 🏗️ System Architecture
+## Overview
 
-![AgentPress High-Level Architecture](architecture.png)
+Generating long-form articles with a single LLM prompt often leads to repetitive phrasing, shallow reasoning, hallucinated facts, and slow sequential generation.
 
-The platform follows an asynchronous, event-driven client-server architecture split into three decoupled tiers:
+AgentPress structures the writing process as a coordinated multi-agent workflow. Built on LangGraph StateGraphs, it separates responsibilities across specialized agents:
+- Categorizing whether real-time web research is required
+- Retrieving and deduplicating authoritative sources
+- Breaking the topic into a structured, granular section plan
+- Drafting planned sections in parallel using a map-reduce pattern
+- Generating inline conceptual visuals
+- Assembling and formatting the final document
+
+All execution updates, worker activities, and intermediate steps stream to the web client in real time via Server-Sent Events (SSE).
+
+---
+
+## System Architecture
+
+The system consists of three main layers: the client interface, the FastAPI backend with streaming orchestration, and the LangGraph multi-agent execution graph with external APIs.
 
 ```mermaid
 flowchart TD
-    User([User Prompt & Editorial Settings]) -->|HTTPS POST| FastAPIServer[FastAPI Server / Stream Manager]
-    FastAPIServer -->|SSE Stream Updates| WebClient[Modern Dark-Mode Frontend]
+    User([User Prompt & Editorial Preferences]) -->|HTTP POST| FastAPIServer[FastAPI Server / Stream Manager]
+    FastAPIServer -->|SSE Stream Updates| WebClient[Web Interface]
 
-    subgraph LangGraphOrchestrator [LangGraph Multi-Agent Engine]
-        Router[1. Router Agent<br/>Adaptive Categorization] -->|needs_research = true| Research[2. Research Agent<br/>Tavily Search Grounding]
-        Router -->|needs_research = false| Orchestrator[3. Orchestrator Agent<br/>Blueprint Planning]
+    subgraph LangGraphOrchestrator [LangGraph Orchestration Engine]
+        Router[1. Router Agent<br/>Determines mode & search queries] -->|Research Needed| Research[2. Research Agent<br/>Tavily Web Search]
+        Router -->|No Research Needed| Orchestrator[3. Plan Agent<br/>Generates structured section outline]
         Research --> Orchestrator
 
         Orchestrator -->|LangGraph Send Fan-Out| Worker1[Writer Agent: Section 1]
         Orchestrator -->|LangGraph Send Fan-Out| Worker2[Writer Agent: Section 2]
         Orchestrator -->|LangGraph Send Fan-Out| WorkerN[Writer Agent: Section N]
 
-        Worker1 --> Reducer[4. Reducer Subgraph<br/>Merge & Formatting]
+        Worker1 --> Reducer[4. Reducer Agent<br/>Merges sections & sorts output]
         Worker2 --> Reducer
         WorkerN --> Reducer
 
-        Reducer --> ImageAgent[5. Image Agent<br/>Gemini 2.5 Multimodal]
-        ImageAgent --> FinalPolish[6. Final Assembly & Export]
+        Reducer --> ImageAgent[5. Image Agent<br/>Plans & generates visuals]
+        ImageAgent --> FinalAssembly[6. Final Assembly & Markdown Export]
     end
 
     FastAPIServer --> LangGraphOrchestrator
 
-    subgraph ResilienceEngine [Fault-Tolerance & Fallback]
-        Mistral[Primary: Mistral Small] -.->|HTTP 429 / Error| GeminiFallback[Fallback: Gemini 2.5 Flash]
+    subgraph Resilience [Fallback Handling]
+        Mistral[Primary: Mistral Small] -.->|HTTP 429 Rate Limit| GeminiFallback[Fallback: Gemini 2.5 Flash]
     end
 
-    subgraph StorageLayer [Data & Persistence]
-        EBS[(AWS EBS Volume<br/>outputs/ & images/)]
-        Checkpointer[(MemorySaver / Postgres ConnectionPool)]
+    subgraph Persistence [Data Layer]
+        Storage[(Host EBS Volumes<br/>outputs/ & images/)]
     end
 
-    LangGraphOrchestrator --> StorageLayer
-    LangGraphOrchestrator -.-> ResilienceEngine
+    LangGraphOrchestrator --> Persistence
+    LangGraphOrchestrator -.-> Resilience
 ```
 
 ---
 
-## 🤖 The Multi-Agent Pipeline
+## Multi-Agent Pipeline
 
-### 1. 🧭 Router Agent (Adaptive Topic Categorization)
-- **Role:** Evaluates the user's topic, target audience, and desired format.
-- **Classification Modes:**
-  - `closed_book`: Evergreen principles, philosophical analyses, or creative narratives that do not require live web data.
-  - `hybrid`: Foundational subjects requiring fresh real-world benchmarks, recent tool releases, or modern case studies.
-  - `open_book`: Time-sensitive topics (industry news roundups, current pricing models, recent regulatory shifts).
-- **Output:** If research is required, generates 3–8 targeted, high-signal search queries.
+### 1. Router Agent
+- Analyzes the input topic, target audience, and selected format.
+- Classifies the topic into one of three execution modes:
+  - `closed_book`: Conceptual or philosophical topics where web retrieval is unnecessary.
+  - `hybrid`: Foundational topics requiring verification of recent developments or real-world examples.
+  - `open_book`: Time-sensitive topics (industry news, recent model releases, current benchmarks).
+- Generates 3 to 8 targeted web search queries when external information is needed.
 
-### 2. 🌐 Research Agent (Authoritative Search & Deduplication)
-- **Role:** Executes search queries against the **Tavily Search API**, filters noise, and extracts structured evidence.
-- **Deduplication:** Normalizes source URLs and deduplicates records to ensure citations are unique and primary.
-- **Resilient Fallback:** Automatically reconstructs `EvidenceItem` citations directly from raw payloads if structured LLM extraction hits context limits.
+### 2. Research Agent
+- Executes search queries through the Tavily Search API.
+- Cleans and deduplicates source URLs to prevent redundant references.
+- Extracts key factual points and passes structured evidence items to the planning phase.
+- Includes a direct extraction fallback to recover citations if structured parsing encounters token constraints.
 
-### 3. 📐 Orchestrator Agent (Master Blueprint Planning)
-- **Role:** Deconstructs the topic into an ordered blueprint of sections.
-- **Granular Contracts:** Each section task defines an evocative title, functional section role (`hook`, `argument`, `breakdown`, `reflection`), specific 1-sentence goal, target word count (150–550 words), and 3–6 concrete narrative bullet points.
-- **Pydantic Validation:** Features automatic schema interceptors that flatten nested bullet arrays emitted by LLMs, guaranteeing 100% schema compliance.
+### 3. Plan Agent (Orchestrator)
+- Converts the research evidence and topic into a comprehensive blueprint of sections.
+- Defines explicit requirements for each section: an evocative heading, a functional role (hook, argument, breakdown, reflection), target word count, and concrete narrative bullets.
+- Uses Pydantic v2 field validators to normalize nested lists and irregular bullet formats emitted by the LLM.
 
-### 4. ✍️ Parallel Writer Agents (LangGraph Map-Reduce / Fan-Out)
-- **Role:** Drafts each planned section concurrently using LangGraph's dynamic `Send()` API.
-- **Deterministic Reducer:** Uses `operator.add` to accumulate completed sections as `(task.id, section_markdown)` tuples, sorting deterministically regardless of which worker completes first.
-- **Context Injection:** Each worker receives the global outline, evidence pack, tone guidelines, and previous section context to ensure seamless transitions.
+### 4. Parallel Writer Agents (Map-Reduce)
+- Dispatches section tasks to concurrent worker instances using LangGraph's dynamic `Send()` API.
+- Each worker receives the section goal, bullet points, global outline context, evidence pack, and tone specifications.
+- Emits real-time SSE progress events as individual sections finish drafting.
 
-### 5. 🎨 Multimodal Image Agent (Generative Visuals & Placement)
-- **Role:** Evaluates narrative density and designs visual aids (architectural diagrams, conceptual dualism comparisons, visual notes).
-- **Generation:** Queries **Google Gemini 2.5 Flash Image** (`gemini-2.5-flash-image`) to synthesize high-resolution inline visuals.
-- **Local Caching & Fallback:** Stores generated PNGs under `/images/`. If image generation encounters rate limits or missing credentials, embeds an elegant editorial visual note instead of failing the pipeline.
+### 5. Reducer Agent
+- Gathers completed sections through an `operator.add` reducer.
+- Sorts sections deterministically according to the original plan order regardless of execution timing.
+- Cleans transitions and constructs the unified document body.
+
+### 6. Image Agent
+- Identifies sections that benefit from visual explanation (e.g., conceptual comparisons, workflow diagrams).
+- Invokes Google Gemini 2.5 Flash Image to generate illustrative assets.
+- Stores generated images on the local filesystem and embeds references directly into the final markdown document.
 
 ---
 
-## ⚡ Key Features
+## Features
 
-| Feature | Description |
+- **Real-Time SSE Streaming:** Live progress updates, section completion statuses, and final markdown streamed over Server-Sent Events.
+- **Immediate Execution Cancellation:** Frontend `AbortController` combined with backend generator cleanup stops active agent runs instantly upon user request.
+- **Automatic 429 Rate-Limit Fallback:** If the primary LLM provider (Mistral Small) returns an HTTP 429 rate limit error at any step, execution automatically falls back to Google Gemini 2.5 Flash without failing the run.
+- **Previous Writeups Library:** Saved writeups and metadata are indexed from disk, allowing users to browse, re-open, read, and export past articles from the sidebar.
+- **Print and PDF Export:** Media print stylesheet formatted with A4 margins, orphan and widow controls, and page-break rules for clean PDF generation via the browser print dialog.
+- **Editorial Controls:** Configurable format options (Explainer, Story, Tutorial), target audience selections, and tone settings passed directly into the planning prompt.
+- **Reading Metrics and Syntax Highlighting:** Displays word counts, estimated read times, visual counts, and syntax-highlighted code blocks with individual copy buttons.
+
+---
+
+## Tech Stack
+
+| Layer | Technologies |
 | :--- | :--- |
-| **Real-Time SSE Streaming** | Live terminal-style execution timeline showing step-by-step agent activities, progress metrics, and live section completion. |
-| **Dual Stop Execution Controls** | Instant execution cancellation via `AbortController` and backend `GeneratorExit` handlers that halt LLM processing immediately. |
-| **Zero-Downtime 429 Fallback** | Automatic model switching: if the primary provider (Mistral Small) hits a `429 Too Many Requests` rate limit, LangChain's `RunnableWithFallbacks` transparently reroutes to Google Gemini 2.5 Flash. |
-| **Sidebar History & Library** | Persistent past writeup library stored on host volumes. Browse, preview, and re-open previously generated writeups with 1 click. |
-| **Publication-Grade Print/PDF** | Dedicated `@media print` CSS engine with A4 margins, orphan/widow protection, high-contrast typography, and page-break rules. |
-| **Editorial Pill Controls** | Intuitive inline toolbar to customize writeup format (Explainer, Story, Tutorial), audience (Founders, Engineers, Learners), and voice/tone. |
-| **Reading Statistics & Code Copy** | Real-time calculation of word count, estimated reading time, visual count, and syntax-highlighted code blocks with 1-click copy buttons. |
+| **Backend Framework** | Python 3.12, FastAPI, Uvicorn |
+| **Agent Orchestration** | LangGraph, LangChain Core |
+| **Language Models** | Mistral Small (`mistralai:mistral-small-latest`), Google Gemini 2.5 Flash (`google_genai:gemini-2.5-flash`) |
+| **Multimodal Generation** | Google Gemini 2.5 Flash Image (`gemini-2.5-flash-image`) |
+| **Search Engine** | Tavily Search API |
+| **Data Validation** | Pydantic v2 |
+| **Frontend** | Vanilla JavaScript (ES6+), HTML5, CSS3, Marked.js, Highlight.js, DOMPurify |
+| **Containerization** | Docker |
+| **Cloud Infrastructure** | AWS EC2 (Ubuntu), Amazon Elastic Container Registry (ECR) |
+| **CI/CD** | GitHub Actions |
 
 ---
 
-## 🛠️ Technology Stack
-
-### Backend & AI Core
-- **Language:** Python 3.12 (Modern type hinting, `asyncio`, typing schemas)
-- **Framework:** [FastAPI](https://fastapi.tiangolo.com) (High-performance ASGI server with SSE streaming)
-- **Orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) (StateGraph, Send fan-out, Subgraphs, MemorySaver)
-- **LLM Integrations:**
-  - Primary: [Mistral Small](https://mistral.ai) (`mistralai:mistral-small-latest`)
-  - Fallback & Multimodal: [Google Gemini 2.5 Flash](https://ai.google.dev) (`google_genai:gemini-2.5-flash` & `gemini-2.5-flash-image`)
-- **Web Search Engine:** [Tavily Search API](https://tavily.com)
-- **Validation:** [Pydantic v2](https://docs.pydantic.dev/) (Strict schemas, `field_validator` hooks)
-
-### Frontend & Styling
-- **Markup & Templates:** Semantic HTML5 with Jinja2 Templating
-- **Styling:** Custom Vanilla CSS3 (CSS Grid, Flexbox, Glassmorphism, CSS Variables, `@media print` stylesheets)
-- **Markdown & Highlighting:** Marked.js (GFM), Highlight.js (GitHub Dark Dimmed theme), DOMPurify (XSS Sanitization)
-
-### Cloud, DevOps & Infrastructure
-- **Containerization:** Docker (Multi-layer caching, non-root slim runtime)
-- **Container Registry:** Amazon Elastic Container Registry (Amazon ECR)
-- **Cloud Hosting:** Amazon Web Services (AWS EC2 - Ubuntu in `ap-south-1`)
-- **CI/CD:** GitHub Actions (Automated build, test, ECR push, SSH hot-deploy with pre-pull image pruning)
-- **Data Persistence:** AWS EBS Host Volume Mounts (`~/agentpress-data/outputs`, `~/agentpress-data/images`)
-
----
-
-## 📂 Project Structure
+## Project Structure
 
 ```text
 AgentPress/
-├── app.py                     # FastAPI application, SSE stream manager & REST endpoints
-├── backend.py                 # LangGraph StateGraph, multi-agent nodes & Pydantic schemas
-├── Dockerfile                 # Production container build specification
-├── .dockerignore              # Optimized Docker build context exclusions
-├── requirements.txt           # Production Python dependencies
-├── .env.example               # Environment configuration template
-│
+├── app.py                     # FastAPI application, SSE streaming routes, and REST endpoints
+├── backend.py                 # LangGraph StateGraph, agent nodes, and Pydantic models
+├── Dockerfile                 # Docker container build definition
+├── .dockerignore              # Docker build exclusions
+├── requirements.txt           # Python dependencies
+├── .env.example               # Example environment configuration
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml         # GitHub Actions automated CI/CD deployment pipeline
-│
+│       └── deploy.yml         # GitHub Actions deployment workflow
 ├── static/
 │   ├── css/
-│   │   └── style.css          # Studio styling, animations, responsive grid & print rules
+│   │   └── style.css          # UI layout, typography, animations, and print styles
 │   └── js/
-│       └── app.js             # Reactive frontend, SSE consumer, tab switching & history logic
-│
+│       └── app.js             # Client logic, SSE connection, DOM updates, and library handling
 ├── templates/
-│   └── index.html             # Main Studio interface, composer, timeline & preview canvas
-│
-├── outputs/                   # Persistent storage for generated Markdown and meta.json
-└── images/                    # Persistent storage for generated multimodal illustrations
+│   └── index.html             # Main interface template
+├── outputs/                   # Directory for generated markdown files and metadata
+└── images/                    # Directory for generated images
 ```
 
 ---
 
-## 🚀 Getting Started Locally
+## Getting Started Locally
 
 ### Prerequisites
-- **Python 3.12+**
-- Active API keys for:
-  - `MISTRAL_API_KEY` (from [Mistral Console](https://console.mistral.ai/))
-  - `GOOGLE_API_KEY` or `GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/))
-  - `TAVILY_API_KEY` (from [Tavily Search](https://tavily.com/))
+
+- Python 3.12+
+- API keys for:
+  - `MISTRAL_API_KEY` (Mistral AI)
+  - `GOOGLE_API_KEY` or `GEMINI_API_KEY` (Google AI Studio)
+  - `TAVILY_API_KEY` (Tavily Search)
 
 ### 1. Clone the Repository
+
 ```bash
 git clone https://github.com/PrathmeshRanjan/AgentPress.git
 cd AgentPress
 ```
 
 ### 2. Configure Environment Variables
-Create a `.env` file in the root directory:
+
+Copy the sample environment file:
+
 ```bash
 cp .env.example .env
 ```
 
-Populate your keys:
+Set your API keys inside `.env`:
+
 ```env
 MISTRAL_API_KEY=your_mistral_api_key
 GOOGLE_API_KEY=your_gemini_api_key
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-### 3. Setup Virtual Environment
+### 3. Create Virtual Environment and Install Dependencies
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -220,23 +209,25 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 4. Run the Application
+### 4. Run the Server
+
 ```bash
 python app.py
 ```
-Open your browser at **`http://localhost:8000`**.
+
+Access the application at `http://localhost:8000`.
 
 ---
 
-## 🐳 Running with Docker
+## Running with Docker
 
-Build and run the container locally:
+Build and run the containerized application locally:
 
 ```bash
-# Build the Docker image
+# Build the image
 docker build -t agentpress:latest .
 
-# Run with persistent volume mounts
+# Run container with volume mounts for outputs and images
 docker run -d \
   --name agentpress \
   -p 8000:8000 \
@@ -248,51 +239,45 @@ docker run -d \
 
 ---
 
-## 📡 REST & Streaming API Reference
+## API Reference
 
-### 1. Stream Execution
+### Execution Endpoint
 - **`POST /api/run`**
-  - **Body:**
+  - Starts the workflow and returns a Server-Sent Events stream.
+  - Request body:
     ```json
     {
-      "topic": "The cognitive dissonance of social media algorithms",
+      "topic": "Comparative analysis of Kafka and Dostoevsky",
       "genre": "explainer",
-      "audience": "Developers & Architects",
-      "tone": "Analytical, rigorous and data-backed"
+      "audience": "General Readers",
+      "tone": "Analytical & Rigorous"
     }
     ```
-  - **Response:** `text/event-stream` (Server-Sent Events) streaming phase updates, section completions, and final deliverable payload.
+  - Response stream events:
+    - `stage`: Lifecycle updates for router, research, planning, writing, and reducer phases.
+    - `section_complete`: Emitted when an individual worker finishes a section.
+    - `final`: Contains completed markdown, run ID, and download link.
+    - `error`: Error details if an unhandled failure occurs.
 
-### 2. Library & History
-- **`GET /api/history`**: Returns a list of past generated writeups with title, word counts, and timestamps.
-- **`GET /api/runs/{run_id}`**: Retrieves the full markdown writeup and metadata for a specific run.
-- **`DELETE /api/runs/{run_id}`**: Permanently removes a writeup and associated assets from storage.
-- **`GET /api/runs/{run_id}/download`**: Direct download of the completed `.md` document.
-
-### 3. System Health
-- **`GET /api/health`**: Returns `{"status": "ok", "workflow": "loaded"}` confirming LangGraph compilation status.
-
----
-
-## 🛡️ Robustness & Production Engineering
-
-1. **Self-Healing LLM Rate-Limit Fallback:**
-   Rate limits (`429 Too Many Requests`) from third-party AI APIs can cripple linear generation pipelines. AgentPress implements `RunnableWithFallbacks` to seamlessly route prompts to Gemini 2.5 Flash without halting workflows.
-2. **Docker `--env-file` Sanitization:**
-   Automatically cleanses and strips accidental surrounding quotes (`'` or `"`) and carriage returns from environment variables passed through container runtimes.
-3. **Map-Reduce Concurrency:**
-   Section drafting scales horizontally across parallel LangGraph workers, reducing total generation time from minutes to seconds.
-4. **Volume Mount Persistence:**
-   All deliverables and image assets are written to mounted host volumes, ensuring that zero data is lost across container rebuilds or CI/CD redeployments.
+### History and Management Endpoints
+- **`GET /api/history`**: Lists past generated writeups with run IDs, titles, word counts, read times, and creation dates.
+- **`GET /api/runs/{run_id}`**: Returns the full markdown document and metadata for the requested run ID.
+- **`DELETE /api/runs/{run_id}`**: Deletes the run directory and associated assets from disk.
+- **`GET /api/runs/{run_id}/download`**: Downloads the generated markdown file directly.
+- **`GET /api/health`**: Returns system health status and workflow compilation state.
 
 ---
 
-## 📄 License
+## Deployment Pipeline
 
-Distributed under the **MIT License**. See `LICENSE` for more information.
+Deployment is automated through GitHub Actions upon every push to the `main` branch:
+
+1. **Build & Authenticate:** The runner builds the Docker image and logs into Amazon ECR using AWS credentials.
+2. **Push:** The tagged image is pushed to the private Amazon ECR repository.
+3. **Deploy over SSH:** The workflow connects to the EC2 host via SSH, prunes dangling images to preserve disk space, pulls the latest image, and restarts the container with volume mounts for persistent data (`outputs/` and `images/`).
 
 ---
 
-<div align="center">
-  Crafted with ❤️ by <a href="https://github.com/PrathmeshRanjan">Prathmesh Ranjan</a>
-</div>
+## License
+
+This project is licensed under the MIT License. See `LICENSE` for details.
