@@ -963,7 +963,10 @@ function formatRelativeTime(isoString) {
         if (diffDays === 1) return "Yesterday";
         if (diffDays < 7) return `${diffDays}d ago`;
 
-        return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        return date.toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+        });
     } catch {
         return "Earlier";
     }
@@ -997,7 +1000,9 @@ async function loadHistory() {
             card.className = "history-item";
             card.dataset.runId = item.run_id;
 
-            const wordsText = item.word_count ? `${Math.round(item.word_count / 100) / 10}k words` : "";
+            const wordsText = item.word_count
+                ? `${Math.round(item.word_count / 100) / 10}k words`
+                : "";
             const relTime = formatRelativeTime(item.created_at);
 
             card.innerHTML = `
