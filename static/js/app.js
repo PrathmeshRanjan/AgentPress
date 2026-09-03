@@ -1068,15 +1068,12 @@ async function openPreviousWriteup(runId) {
                 markdown: data.markdown,
                 download_url: data.download_url,
             },
-            false
+            false,
         );
 
         // Set topic input to article topic
         if (topicInput && data.topic) {
             topicInput.value = data.topic;
-            if (charCounter) {
-                charCounter.textContent = `${data.topic.length} / 1000`;
-            }
         }
 
         showToast(`Opened: ${data.title}`);
