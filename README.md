@@ -2,7 +2,7 @@
 
 A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates technical writeups and essays using LangGraph, FastAPI, and Docker.
 
-[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [System Architecture](#system-architecture) • [Multi-Agent Pipeline](#multi-agent-pipeline) • [Features](#features) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally) • [API Reference](#api-reference)
+[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [System Architecture](#system-architecture) • [Graph and Subgraph Design](#graph-and-subgraph-design) • [Multi-Agent Execution Pipeline](#multi-agent-execution-pipeline) • [Features](#features) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally) • [API Reference](#api-reference)
 
 ---
 
@@ -25,7 +25,7 @@ AgentPress structures the writing process as a coordinated multi-agent workflow.
 - Retrieving and deduplicating authoritative sources
 - Breaking the topic into a structured, granular section plan
 - Drafting planned sections in parallel using a map-reduce pattern
-- Generating inline conceptual visuals
+- Executing a compiled reducer subgraph to merge content, plan image placements, and synthesize visuals
 - Assembling and formatting the final document
 
 All execution updates, worker activities, and intermediate steps stream to the web client in real time via Server-Sent Events (SSE).
@@ -34,31 +34,35 @@ All execution updates, worker activities, and intermediate steps stream to the w
 
 ## System Architecture
 
-The system consists of three main layers: the client interface, the FastAPI backend with streaming orchestration, and the LangGraph multi-agent execution graph with external APIs.
+The architecture consists of three main layers: the client interface, the FastAPI backend with streaming orchestration, and the LangGraph multi-agent execution engine featuring nested subgraphs.
 
 ```mermaid
 flowchart TD
     User([User Prompt & Editorial Preferences]) -->|HTTP POST| FastAPIServer[FastAPI Server / Stream Manager]
     FastAPIServer -->|SSE Stream Updates| WebClient[Web Interface]
 
-    subgraph LangGraphOrchestrator [LangGraph Orchestration Engine]
-        Router[1. Router Agent<br/>Determines mode & search queries] -->|Research Needed| Research[2. Research Agent<br/>Tavily Web Search]
-        Router -->|No Research Needed| Orchestrator[3. Plan Agent<br/>Generates structured section outline]
+    subgraph MainGraph [LangGraph Main StateGraph]
+        Router[1. Router Node<br/>Determines mode & search queries] -->|needs_research = true| Research[2. Research Node<br/>Tavily Web Search & Deduplication]
+        Router -->|needs_research = false| Orchestrator[3. Orchestrator Node<br/>Generates structured section outline]
         Research --> Orchestrator
 
-        Orchestrator -->|LangGraph Send Fan-Out| Worker1[Writer Agent: Section 1]
-        Orchestrator -->|LangGraph Send Fan-Out| Worker2[Writer Agent: Section 2]
-        Orchestrator -->|LangGraph Send Fan-Out| WorkerN[Writer Agent: Section N]
+        Orchestrator -->|LangGraph Send Fan-Out| Worker1[Worker 1: Section 1]
+        Orchestrator -->|LangGraph Send Fan-Out| Worker2[Worker 2: Section 2]
+        Orchestrator -->|LangGraph Send Fan-Out| WorkerN[Worker N: Section N]
 
-        Worker1 --> Reducer[4. Reducer Agent<br/>Merges sections & sorts output]
-        Worker2 --> Reducer
-        WorkerN --> Reducer
+        subgraph ReducerSubgraph [Nested Reducer Subgraph: 'reducer']
+            MergeContent[4a. merge_content<br/>Sort by task.id & construct body] --> DecideImages[4b. decide_images<br/>Analyze density & place [[IMAGE_X]] tags]
+            DecideImages --> GenerateImages[4c. generate_and_place_images<br/>Gemini 2.5 Flash Image & fallback callouts]
+        end
 
-        Reducer --> ImageAgent[5. Image Agent<br/>Plans & generates visuals]
-        ImageAgent --> FinalAssembly[6. Final Assembly & Markdown Export]
+        Worker1 --> ReducerSubgraph
+        Worker2 --> ReducerSubgraph
+        WorkerN --> ReducerSubgraph
+
+        ReducerSubgraph --> FinalAssembly[5. Final Assembly & Markdown Export]
     end
 
-    FastAPIServer --> LangGraphOrchestrator
+    FastAPIServer --> MainGraph
 
     subgraph Resilience [Fallback Handling]
         Mistral[Primary: Mistral Small] -.->|HTTP 429 Rate Limit| GeminiFallback[Fallback: Gemini 2.5 Flash]
@@ -66,49 +70,106 @@ flowchart TD
 
     subgraph Persistence [Data Layer]
         Storage[(Host EBS Volumes<br/>outputs/ & images/)]
+        Checkpointer[(MemorySaver / Postgres ConnectionPool)]
     end
 
-    LangGraphOrchestrator --> Persistence
-    LangGraphOrchestrator -.-> Resilience
+    MainGraph --> Persistence
+    MainGraph -.-> Resilience
 ```
 
 ---
 
-## Multi-Agent Pipeline
+## Graph and Subgraph Design
 
-### 1. Router Agent
-- Analyzes the input topic, target audience, and selected format.
+A central architectural pattern in AgentPress is the use of **nested LangGraph Subgraphs** to decouple post-processing, assembly, and multimodal illustration from the fan-out drafting loop.
+
+### 1. The Parent StateGraph (`g`)
+The primary graph handles high-level routing, evidence collection, outline architecture, and parallel dispatch:
+- **`router`**: Evaluates topic constraints and decides research path.
+- **`research`**: Conducts web queries and returns verified evidence packs.
+- **`orchestrator`**: Plans the master article blueprint.
+- **`worker`**: Dynamically mapped via conditional `fanout` using LangGraph's `Send()` API across all planned sections.
+- **`reducer`**: A compiled subgraph mounted directly as a node in the parent graph:
+  ```python
+  g.add_node("reducer", reducer_subgraph)
+  ```
+
+### 2. The Nested Reducer Subgraph (`reducer_graph`)
+Rather than treating document reduction as a monolithic function, the reducer is compiled as its own independent `StateGraph(State)` containing three discrete sequential stages:
+```python
+reducer_graph = StateGraph(State)
+reducer_graph.add_node("merge_content", merge_content)
+reducer_graph.add_node("decide_images", decide_images)
+reducer_graph.add_node("generate_and_place_images", generate_and_place_images)
+
+reducer_graph.add_edge(START, "merge_content")
+reducer_graph.add_edge("merge_content", "decide_images")
+reducer_graph.add_edge("decide_images", "generate_and_place_images")
+reducer_graph.add_edge("generate_and_place_images", END)
+reducer_subgraph = reducer_graph.compile()
+```
+
+#### Internal Subgraph Nodes:
+1. **`merge_content`**:
+   - Collects parallel section tuples `(task.id, section_markdown)`.
+   - Sorts deterministically by `task.id`, eliminating race conditions caused by workers finishing out of order.
+   - Synthesizes the master title, subtitle, and body text.
+2. **`decide_images`**:
+   - Reviews the unified markdown draft and assesses narrative density.
+   - Emits a structured `GlobalImagePlan` specifying up to 3 image concepts, generative prompts, alt text, captions, and contextually placed `[[IMAGE_X]]` tags.
+3. **`generate_and_place_images`**:
+   - Calls Google Gemini 2.5 Flash Image to generate high-resolution illustrations.
+   - Saves generated assets to the local filesystem (`images/`) and swaps placeholder tags with markdown image syntax.
+   - **Graceful Fallback:** If image generation hits rate limits or network dropouts, automatically degrades into a styled editorial `> [Visual Note]` markdown callout box rather than breaking execution.
+
+---
+
+## Multi-Agent Execution Pipeline
+
+### 1. Router Node (Adaptive Categorization)
+- Analyzes the input topic, target audience, and selected editorial format.
 - Classifies the topic into one of three execution modes:
   - `closed_book`: Conceptual or philosophical topics where web retrieval is unnecessary.
   - `hybrid`: Foundational topics requiring verification of recent developments or real-world examples.
   - `open_book`: Time-sensitive topics (industry news, recent model releases, current benchmarks).
-- Generates 3 to 8 targeted web search queries when external information is needed.
+- If research is needed, generates 3 to 8 targeted, temporal-aware search queries.
 
-### 2. Research Agent
+### 2. Research Node (Web Search & Deduplication)
 - Executes search queries through the Tavily Search API.
 - Cleans and deduplicates source URLs to prevent redundant references.
 - Extracts key factual points and passes structured evidence items to the planning phase.
 - Includes a direct extraction fallback to recover citations if structured parsing encounters token constraints.
 
-### 3. Plan Agent (Orchestrator)
+### 3. Orchestrator Node (Master Blueprint Planning)
 - Converts the research evidence and topic into a comprehensive blueprint of sections.
 - Defines explicit requirements for each section: an evocative heading, a functional role (hook, argument, breakdown, reflection), target word count, and concrete narrative bullets.
-- Uses Pydantic v2 field validators to normalize nested lists and irregular bullet formats emitted by the LLM.
+- Uses Pydantic v2 field validators (`@field_validator(mode="before")`) to normalize nested lists and irregular bullet formats emitted by the LLM.
 
-### 4. Parallel Writer Agents (Map-Reduce)
+### 4. Parallel Worker Nodes (Map-Reduce via `Send()`)
 - Dispatches section tasks to concurrent worker instances using LangGraph's dynamic `Send()` API.
-- Each worker receives the section goal, bullet points, global outline context, evidence pack, and tone specifications.
-- Emits real-time SSE progress events as individual sections finish drafting.
+- Each worker receives the section goal, bullet points, global outline context, evidence pack, tone specifications, and strict anti-slop guidelines (avoiding cliches like "in conclusion", "game-changer", "landscape").
+- State aggregation channel:
+  ```python
+  sections: Annotated[List[tuple[int, str]], operator.add]
+  ```
+  Uses `operator.add` to safely append completed sections concurrently without state collisions.
 
-### 5. Reducer Agent
-- Gathers completed sections through an `operator.add` reducer.
-- Sorts sections deterministically according to the original plan order regardless of execution timing.
-- Cleans transitions and constructs the unified document body.
+---
 
-### 6. Image Agent
-- Identifies sections that benefit from visual explanation (e.g., conceptual comparisons, workflow diagrams).
-- Invokes Google Gemini 2.5 Flash Image to generate illustrative assets.
-- Stores generated images on the local filesystem and embeds references directly into the final markdown document.
+## Technical Highlights and Resilience
+
+### 1. Transparent 429 Rate-Limit Fallback
+Third-party API rate limits (`429 Too Many Requests`) can halt linear workflows. AgentPress wraps the primary model using LangChain's `RunnableWithFallbacks`:
+- **Primary:** `mistralai:mistral-small-latest`
+- **Fallback:** `google_genai:gemini-2.5-flash`
+If Mistral returns an HTTP 429 or provider exception at any step (routing, planning, drafting, or image planning), the workflow automatically switches to Gemini 2.5 Flash without throwing an error or restarting the pipeline.
+
+### 2. Dual Checkpointer Support
+- **MemorySaver (Default):** Zero-latency, thread-safe in-memory state tracking optimized for real-time FastAPI streaming. Eliminates SSL connection timeouts, pool exhaustion, and external database latency during streaming runs.
+- **PostgresSaver:** Optional persistent checkpointing support with `psycopg_pool.ConnectionPool` for enterprise environments where runs must survive process restarts.
+
+### 3. Pydantic v2 Interceptors
+Custom `@field_validator` hooks on `Task.bullets`, `Plan.constraints`, and `RouterDecision.queries` inspect incoming LLM payloads before validation, flattening nested arrays and sanitizing malformed dictionary outputs into clean strings.
 
 ---
 
@@ -129,11 +190,12 @@ flowchart TD
 | Layer | Technologies |
 | :--- | :--- |
 | **Backend Framework** | Python 3.12, FastAPI, Uvicorn |
-| **Agent Orchestration** | LangGraph, LangChain Core |
+| **Agent Orchestration** | LangGraph (StateGraph, Nested Subgraphs, Send Fan-Out), LangChain Core |
 | **Language Models** | Mistral Small (`mistralai:mistral-small-latest`), Google Gemini 2.5 Flash (`google_genai:gemini-2.5-flash`) |
 | **Multimodal Generation** | Google Gemini 2.5 Flash Image (`gemini-2.5-flash-image`) |
 | **Search Engine** | Tavily Search API |
 | **Data Validation** | Pydantic v2 |
+| **State Persistence** | MemorySaver, PostgresSaver (optional via `psycopg_pool`) |
 | **Frontend** | Vanilla JavaScript (ES6+), HTML5, CSS3, Marked.js, Highlight.js, DOMPurify |
 | **Containerization** | Docker |
 | **Cloud Infrastructure** | AWS EC2 (Ubuntu), Amazon Elastic Container Registry (ECR) |
@@ -146,7 +208,7 @@ flowchart TD
 ```text
 AgentPress/
 ├── app.py                     # FastAPI application, SSE streaming routes, and REST endpoints
-├── backend.py                 # LangGraph StateGraph, agent nodes, and Pydantic models
+├── backend.py                 # LangGraph StateGraph, reducer subgraph, agent nodes, and Pydantic models
 ├── Dockerfile                 # Docker container build definition
 ├── .dockerignore              # Docker build exclusions
 ├── requirements.txt           # Python dependencies
