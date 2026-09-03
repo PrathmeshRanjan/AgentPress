@@ -177,8 +177,29 @@ class State(TypedDict):
     final: str
 
 
-# Initialize LLM (Mistral Small or configurable via environment)
-model = init_chat_model("mistralai:mistral-small-latest")
+# Synchronize Google / Gemini API keys for seamless environment compatibility
+if os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+if os.getenv("GOOGLE_API_KEY") and not os.getenv("GEMINI_API_KEY"):
+    os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+
+# Initialize LLM dynamically:
+# - If MISTRAL_API_KEY is set and valid, use Mistral Small
+# - If only GOOGLE_API_KEY / GEMINI_API_KEY is available, seamlessly use Gemini 2.5 Flash
+# - Can also be explicitly overridden with MODEL_NAME (e.g. "mistralai:mistral-small-latest")
+configured_model = os.getenv("MODEL_NAME")
+if not configured_model:
+    mistral_key = os.getenv("MISTRAL_API_KEY", "").strip()
+    google_key = os.getenv("GOOGLE_API_KEY", "").strip()
+
+    if mistral_key and not mistral_key.startswith("your_"):
+        configured_model = "mistralai:mistral-small-latest"
+    elif google_key and not google_key.startswith("your_"):
+        configured_model = "google_genai:gemini-2.5-flash"
+    else:
+        configured_model = "mistralai:mistral-small-latest"
+
+model = init_chat_model(configured_model)
 
 
 # ============================================================================
@@ -546,9 +567,9 @@ def _gemini_generate_image_bytes(prompt: str) -> bytes:
     except ImportError as exc:
         raise RuntimeError("google-genai library is not installed. Install via `pip install google-genai`.") from exc
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY environment variable is not set.")
+        raise RuntimeError("Neither GOOGLE_API_KEY nor GEMINI_API_KEY environment variable is set.")
 
     client = genai.Client(api_key=api_key)
 
