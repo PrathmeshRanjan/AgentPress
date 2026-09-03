@@ -1,6 +1,6 @@
 # AgentPress
 
-A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates technical writeups and essays using LangGraph, FastAPI, and Docker.
+A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates essays, analytical articles, and comprehensive writeups across any domain using LangGraph, FastAPI, and Docker.
 
 [Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Reducer Subgraph Deep Dive](#reducer-subgraph-deep-dive) • [Data Contracts & Validation](#data-contracts-and-validation) • [Resilience & Fallback](#resilience-and-fault-tolerance) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally)
 
