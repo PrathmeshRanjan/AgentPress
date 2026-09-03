@@ -243,8 +243,22 @@ class State(TypedDict):
     final: str
 
 
-# Initialize LLM (Mistral Small or configurable via environment)
-model = init_chat_model("mistralai:mistral-small-latest")
+# ============================================================================
+# 2. LLM Initialization with Seamless 429 Rate-Limit Fallback to Gemini
+# ============================================================================
+
+# Primary Chat LLM (Mistral Small)
+primary_model = init_chat_model("mistralai:mistral-small-latest")
+
+# Fallback Chat LLM (Google Gemini 2.5 Flash for 429 Rate-Limit Exceeded & Provider Errors)
+try:
+    gemini_fallback = init_chat_model("google_genai:gemini-2.5-flash")
+    # Wrap primary with Gemini fallback: automatically activates on any 429, rate limit, or provider error
+    model = primary_model.with_fallbacks([gemini_fallback])
+    print("[Notice] AgentPress LLM configured with automatic Gemini 2.5 Flash fallback for 429 rate limits.")
+except Exception as e:
+    print(f"[Warning] Could not initialize Gemini fallback model: {e}")
+    model = primary_model
 
 
 # ============================================================================
