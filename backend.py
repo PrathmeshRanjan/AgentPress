@@ -304,17 +304,25 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
     tool = TavilySearch(max_results=max_results)
     results = tool.invoke({"query": query})
 
+    if isinstance(results, dict):
+        items = results.get("results", [])
+    elif isinstance(results, list):
+        items = results
+    else:
+        items = []
+
     normalized: List[dict] = []
-    for r in results or []:
-        normalized.append(
-            {
-                "title": r.get("title") or "",
-                "url": r.get("url") or "",
-                "snippet": r.get("content") or r.get("snippet") or "",
-                "published_at": r.get("published_date") or r.get("published_at"),
-                "source": r.get("source"),
-            }
-        )
+    for r in items:
+        if isinstance(r, dict):
+            normalized.append(
+                {
+                    "title": r.get("title") or "",
+                    "url": r.get("url") or "",
+                    "snippet": r.get("content") or r.get("snippet") or "",
+                    "published_at": r.get("published_date") or r.get("published_at"),
+                    "source": r.get("source"),
+                }
+            )
     return normalized
 
 
@@ -345,17 +353,33 @@ def research_node(state: State) -> dict:
     if not raw_results:
         return {"evidence": []}
 
-    extractor = model.with_structured_output(EvidencePack)
-    pack = extractor.invoke(
-        [
-            SystemMessage(content=RESEARCH_SYSTEM),
-            HumanMessage(content=f"Raw web search results:\n{raw_results}"),
-        ]
-    )
+    try:
+        extractor = model.with_structured_output(EvidencePack)
+        pack = extractor.invoke(
+            [
+                SystemMessage(content=RESEARCH_SYSTEM),
+                HumanMessage(content=f"Raw web search results:\n{raw_results[:20]}"),
+            ]
+        )
+        evidence_items = pack.evidence or []
+    except Exception as e:
+        print(f"[Warning] Structured evidence extraction fallback triggered: {e}")
+        evidence_items = []
+        for r in raw_results:
+            if r.get("url"):
+                evidence_items.append(
+                    EvidenceItem(
+                        title=r.get("title") or "Authoritative Source",
+                        url=r["url"],
+                        published_at=r.get("published_at"),
+                        snippet=r.get("snippet") or "",
+                        source=r.get("source"),
+                    )
+                )
 
     # Deduplicate items by URL to avoid repetitive citations
     dedup: dict[str, EvidenceItem] = {}
-    for e in pack.evidence:
+    for e in evidence_items:
         if e.url:
             dedup[e.url] = e
 
@@ -661,6 +685,10 @@ def generate_and_place_images(state: State) -> dict:
     md = state.get("md_with_placeholders") or state["merged_md"]
     image_specs = state.get("image_specs", []) or []
     base_dir = Path(__file__).resolve().parent
+
+    clean_title = re.sub(r'[^\w\s-]', '', plan.blog_title).strip()
+    clean_title = re.sub(r'[-\s]+', '_', clean_title) or "writeup"
+    safe_filename = f"{clean_title}.md"
     out_file = base_dir / safe_filename
 
     # If no images were planned, export the text directly
