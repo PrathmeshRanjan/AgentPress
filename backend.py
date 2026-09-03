@@ -63,6 +63,25 @@ from langgraph.checkpoint.memory import MemorySaver
 # Load environment variables (.env)
 load_dotenv()
 
+# Automatically sanitize environment variables (Docker --env-file passes literal quotes)
+for env_key in [
+    "MISTRAL_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "TAVILY_API_KEY",
+    "DATABASE_URL",
+    "MODEL_NAME",
+]:
+    raw_val = os.environ.get(env_key)
+    if raw_val:
+        os.environ[env_key] = raw_val.strip().strip("'\"").strip()
+
+# Synchronize GOOGLE_API_KEY and GEMINI_API_KEY
+if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+if os.environ.get("GOOGLE_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+    os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 
@@ -546,9 +565,9 @@ def _gemini_generate_image_bytes(prompt: str) -> bytes:
     except ImportError as exc:
         raise RuntimeError("google-genai library is not installed. Install via `pip install google-genai`.") from exc
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY environment variable is not set.")
+        raise RuntimeError("Neither GOOGLE_API_KEY nor GEMINI_API_KEY environment variable is set.")
 
     client = genai.Client(api_key=api_key)
 
