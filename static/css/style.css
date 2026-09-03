@@ -207,9 +207,178 @@ button {
     background: rgba(131, 245, 181, 0.18);
 }
 
+/* =========================================================
+   Sidebar Recent Writeups Library
+   ========================================================= */
+.sidebar-history {
+    margin-top: 24px;
+    display: flex;
+    flex-direction: column;
+}
+
+.history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    padding: 0 4px;
+}
+
+.history-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.history-title {
+    color: #8b9ea4;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.history-count {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--primary);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 9999px;
+}
+
+.history-refresh-btn {
+    background: transparent;
+    border: none;
+    color: #60766e;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: all 150ms ease;
+}
+
+.history-refresh-btn:hover {
+    color: var(--text);
+    transform: rotate(90deg);
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.history-list::-webkit-scrollbar {
+    width: 4px;
+}
+
+.history-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+.history-empty {
+    padding: 18px 8px;
+    text-align: center;
+    color: #556962;
+    font-size: 11.5px;
+    border: 1px dashed rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-small);
+}
+
+.history-empty-icon {
+    display: block;
+    font-size: 16px;
+    margin-bottom: 4px;
+    opacity: 0.6;
+}
+
+.history-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 9px 11px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 160ms ease;
+    position: relative;
+}
+
+.history-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(131, 245, 181, 0.3);
+    transform: translateX(2px);
+}
+
+.history-item.active {
+    background: rgba(131, 245, 181, 0.09);
+    border-color: rgba(131, 245, 181, 0.45);
+}
+
+.history-item-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.history-item-title {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.history-item-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    color: var(--muted);
+}
+
+.history-badge {
+    color: var(--primary);
+    background: rgba(131, 245, 181, 0.1);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.history-item-del {
+    background: transparent;
+    border: none;
+    color: #60766e;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0 3px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: all 150ms ease;
+}
+
+.history-item:hover .history-item-del {
+    opacity: 1;
+}
+
+.history-item-del:hover {
+    color: #ff6b6b;
+}
 
 .workflow-menu {
-    margin-top: 42px;
+    margin-top: 32px;
 }
 
 

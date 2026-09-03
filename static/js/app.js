@@ -70,6 +70,12 @@ const healthDot = document.getElementById("healthDot");
 const healthText = document.getElementById("healthText");
 const toast = document.getElementById("toast");
 
+// Sidebar history library
+const historyList = document.getElementById("historyList");
+const historyEmpty = document.getElementById("historyEmpty");
+const historyCount = document.getElementById("historyCount");
+const refreshHistoryButton = document.getElementById("refreshHistoryButton");
+
 // --- Runtime State Variables ---
 let abortController = null; // Active AbortController instance for canceling requests
 let finalMarkdown = ""; // Stores the completed blog post Markdown
@@ -583,6 +589,9 @@ function displayFinalResult(event) {
     }
     updateProgress(100);
 
+    // Refresh history list so the new writeup appears in sidebar
+    loadHistory();
+
     // Smooth-scroll down to deliverable
     document.getElementById("resultCard").scrollIntoView({
         behavior: "smooth",
@@ -934,6 +943,157 @@ async function checkHealth() {
     }
 }
 
+// ============================================================================
+// 14. Sidebar History & Library Management
+// ============================================================================
+
+function formatRelativeTime(isoString) {
+    if (!isoString) return "Recently";
+    try {
+        const date = new Date(isoString);
+        const now = new Date();
+        const diffSeconds = Math.floor((now - date) / 1000);
+
+        if (diffSeconds < 60) return "Just now";
+        const diffMinutes = Math.floor(diffSeconds / 60);
+        if (diffMinutes < 60) return `${diffMinutes}m ago`;
+        const diffHours = Math.floor(diffMinutes / 60);
+        if (diffHours < 24) return `${diffHours}h ago`;
+        const diffDays = Math.floor(diffHours / 24);
+        if (diffDays === 1) return "Yesterday";
+        if (diffDays < 7) return `${diffDays}d ago`;
+
+        return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    } catch {
+        return "Earlier";
+    }
+}
+
+async function loadHistory() {
+    if (!historyList) return;
+
+    try {
+        const res = await fetch("/api/history");
+        if (!res.ok) return;
+        const items = await res.json();
+
+        if (historyCount) {
+            historyCount.textContent = String(items.length);
+        }
+
+        if (!items || items.length === 0) {
+            historyList.innerHTML = `
+                <div id="historyEmpty" class="history-empty">
+                    <span class="history-empty-icon">✎</span>
+                    <p>Completed writeups will appear here.</p>
+                </div>
+            `;
+            return;
+        }
+
+        historyList.innerHTML = "";
+        items.forEach((item) => {
+            const card = document.createElement("div");
+            card.className = "history-item";
+            card.dataset.runId = item.run_id;
+
+            const wordsText = item.word_count ? `${Math.round(item.word_count / 100) / 10}k words` : "";
+            const relTime = formatRelativeTime(item.created_at);
+
+            card.innerHTML = `
+                <div class="history-item-top">
+                    <span class="history-item-title">${escapeHtml(item.title || item.topic || "Untitled Writeup")}</span>
+                    <button type="button" class="history-item-del" title="Delete writeup">✕</button>
+                </div>
+                <div class="history-item-meta">
+                    <span>${escapeHtml(relTime)}</span>
+                    ${wordsText ? `<span class="history-badge">${wordsText}</span>` : ""}
+                </div>
+            `;
+
+            // Click to load article
+            card.addEventListener("click", (e) => {
+                if (e.target.closest(".history-item-del")) return;
+                openPreviousWriteup(item.run_id);
+            });
+
+            // Delete button
+            const delBtn = card.querySelector(".history-item-del");
+            delBtn?.addEventListener("click", (e) => {
+                e.stopPropagation();
+                deletePreviousWriteup(item.run_id);
+            });
+
+            historyList.appendChild(card);
+        });
+    } catch (err) {
+        console.warn("Could not load writeup history:", err);
+    }
+}
+
+async function openPreviousWriteup(runId) {
+    if (!runId) return;
+
+    try {
+        // Highlight active item in sidebar
+        document.querySelectorAll(".history-item").forEach((el) => {
+            el.classList.toggle("active", el.dataset.runId === runId);
+        });
+
+        showToast("Loading previous writeup...");
+
+        const res = await fetch(`/api/runs/${runId}`);
+        if (!res.ok) {
+            showToast("Failed to load writeup.");
+            return;
+        }
+
+        const data = await res.json();
+
+        // Switch to Preview tab
+        tabPreview.click();
+
+        // Render into deliverable pane
+        displayFinalResult({
+            markdown: data.markdown,
+            download_url: data.download_url,
+        });
+
+        // Set topic input to article topic
+        if (topicInput && data.topic) {
+            topicInput.value = data.topic;
+            charCounter.textContent = `${data.topic.length} / 1000`;
+        }
+
+        showToast(`Opened: ${data.title}`);
+    } catch (err) {
+        console.error("Error opening previous writeup:", err);
+        showToast("Error opening writeup.");
+    }
+}
+
+async function deletePreviousWriteup(runId) {
+    if (!confirm("Are you sure you want to delete this saved writeup?")) return;
+
+    try {
+        const res = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+        if (res.ok) {
+            showToast("Writeup deleted.");
+            loadHistory();
+        } else {
+            showToast("Failed to delete.");
+        }
+    } catch {
+        showToast("Error deleting writeup.");
+    }
+}
+
+refreshHistoryButton?.addEventListener("click", () => {
+    loadHistory();
+    showToast("Refreshed writeup library.");
+});
+
 // Initial bootstrap on page load
 resetInterface();
 checkHealth();
+loadHistory();

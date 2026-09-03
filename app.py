@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -230,17 +233,28 @@ def get_plan_task_map(
     return task_map
 
 
+def extract_title_from_markdown(markdown: str) -> str:
+    """Extract the first H1 heading from markdown text, or provide a clean default."""
+    for line in (markdown or "").splitlines():
+        line = line.strip()
+        if line.startswith("# "):
+            clean = line[2:].strip()
+            if clean:
+                return clean
+    return "Untitled Writeup"
+
+
 def save_final_markdown(
     run_id: str,
     markdown: str,
+    topic: str = "",
+    genre: str = "",
+    audience: str = "",
+    tone: str = "",
 ) -> Path:
     """
-    Save a predictable copy of the generated Markdown.
-
-    This does not change backend.py. The backend can continue
-    saving its original title-based Markdown file.
+    Save the generated Markdown writeup and persist structured metadata for history browsing.
     """
-
     run_directory = OUTPUTS_DIR / run_id
     run_directory.mkdir(
         parents=True,
@@ -258,6 +272,32 @@ def save_final_markdown(
         markdown,
         encoding="utf-8",
     )
+
+    # Calculate statistics & extract title
+    words = len(re.findall(r"\b\w+\b", markdown))
+    read_time = max(1, round(words / 220))
+    title = extract_title_from_markdown(markdown)
+
+    # Save meta.json for library browsing
+    meta = {
+        "run_id": run_id,
+        "title": title,
+        "topic": topic or title,
+        "genre": genre or "auto",
+        "audience": audience or "",
+        "tone": tone or "",
+        "word_count": words,
+        "read_time_minutes": read_time,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "download_url": f"/api/runs/{run_id}/download",
+    }
+    try:
+        (run_directory / "meta.json").write_text(
+            json.dumps(meta, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as err:
+        logger.warning("Could not save meta.json for run %s: %s", run_id, err)
 
     return output_file
 
@@ -738,6 +778,10 @@ def stream_workflow(
         save_final_markdown(
             run_id=run_id,
             markdown=final_markdown,
+            topic=topic,
+            genre=genre,
+            audience=audience,
+            tone=tone,
         )
 
         yield create_sse_event(
@@ -893,6 +937,129 @@ def download_markdown(run_id: str):
         media_type="text/markdown",
         filename=f"agentpress-writeup-{safe_run_id[:8]}.md",
     )
+
+
+# ---------------------------------------------------------
+# History & Previous Writeups Endpoints
+# ---------------------------------------------------------
+@app.get("/api/history")
+def get_history():
+    """
+    Returns a list of completed writeups from OUTPUTS_DIR, sorted newest first.
+    """
+    history_items = []
+    if not OUTPUTS_DIR.exists():
+        return []
+
+    for run_dir in OUTPUTS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+
+        run_id = run_dir.name
+        writeup_file = run_dir / "writeup.md"
+        if not writeup_file.is_file():
+            writeup_file = run_dir / "blog.md"
+        if not writeup_file.is_file():
+            continue
+
+        meta_file = run_dir / "meta.json"
+        if meta_file.is_file():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                history_items.append(meta)
+                continue
+            except Exception:
+                pass
+
+        # If meta.json doesn't exist yet, reconstruct dynamically from markdown file
+        try:
+            content = writeup_file.read_text(encoding="utf-8")
+            title = extract_title_from_markdown(content)
+            words = len(re.findall(r"\b\w+\b", content))
+            mtime = writeup_file.stat().st_mtime
+            created_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+            history_items.append({
+                "run_id": run_id,
+                "title": title,
+                "topic": title,
+                "genre": "auto",
+                "audience": "",
+                "tone": "",
+                "word_count": words,
+                "read_time_minutes": max(1, round(words / 220)),
+                "created_at": created_at,
+                "download_url": f"/api/runs/{run_id}/download",
+            })
+        except Exception as err:
+            logger.warning("Could not read writeup for run %s: %s", run_id, err)
+
+    # Sort newest first
+    history_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return history_items
+
+
+@app.get("/api/runs/{run_id}")
+def get_run_details(run_id: str):
+    """
+    Returns the markdown content and metadata of a specific writeup for preview restoration.
+    """
+    safe_run_id = "".join(
+        c for c in run_id if c.isalnum() or c in {"-", "_"}
+    )
+    if safe_run_id != run_id:
+        raise HTTPException(status_code=400, detail="Invalid run ID.")
+
+    run_dir = OUTPUTS_DIR / safe_run_id
+    writeup_file = run_dir / "writeup.md"
+    if not writeup_file.is_file():
+        writeup_file = run_dir / "blog.md"
+    if not writeup_file.is_file():
+        raise HTTPException(status_code=404, detail="Writeup not found.")
+
+    markdown = writeup_file.read_text(encoding="utf-8")
+    title = extract_title_from_markdown(markdown)
+    words = len(re.findall(r"\b\w+\b", markdown))
+
+    meta = {}
+    meta_file = run_dir / "meta.json"
+    if meta_file.is_file():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    return {
+        "run_id": safe_run_id,
+        "title": meta.get("title") or title,
+        "topic": meta.get("topic") or title,
+        "genre": meta.get("genre") or "auto",
+        "audience": meta.get("audience") or "",
+        "tone": meta.get("tone") or "",
+        "markdown": markdown,
+        "word_count": meta.get("word_count") or words,
+        "read_time_minutes": meta.get("read_time_minutes") or max(1, round(words / 220)),
+        "created_at": meta.get("created_at") or datetime.fromtimestamp(writeup_file.stat().st_mtime, tz=timezone.utc).isoformat(),
+        "download_url": f"/api/runs/{safe_run_id}/download",
+    }
+
+
+@app.delete("/api/runs/{run_id}")
+def delete_run(run_id: str):
+    """
+    Deletes a completed writeup from disk storage.
+    """
+    safe_run_id = "".join(
+        c for c in run_id if c.isalnum() or c in {"-", "_"}
+    )
+    if safe_run_id != run_id:
+        raise HTTPException(status_code=400, detail="Invalid run ID.")
+
+    run_dir = OUTPUTS_DIR / safe_run_id
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Writeup not found.")
+
+    shutil.rmtree(run_dir, ignore_errors=True)
+    return {"status": "deleted", "run_id": safe_run_id}
 
 
 
