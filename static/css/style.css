@@ -1086,6 +1086,12 @@ textarea::placeholder {
 }
 
 
+[hidden],
+.empty-state[hidden],
+.empty-state.hidden {
+    display: none !important;
+}
+
 .empty-state {
     min-height: 230px;
 

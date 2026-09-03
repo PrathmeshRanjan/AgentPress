@@ -297,7 +297,9 @@ function createStageElement(stageId) {
  * Updates or creates a main stage item in the execution timeline.
  */
 function updateStage(event) {
-    activityEmpty.hidden = true;
+    if (activityEmpty && activityEmpty.parentNode === timeline) {
+        timeline.removeChild(activityEmpty);
+    }
 
     let element = getStageElement(event.id);
     if (!element) {
@@ -322,7 +324,9 @@ function updateStage(event) {
  * Appends a minor substage item under the reducer phase.
  */
 function addSubstage(event) {
-    activityEmpty.hidden = true;
+    if (activityEmpty && activityEmpty.parentNode === timeline) {
+        timeline.removeChild(activityEmpty);
+    }
 
     const element = document.createElement("div");
     element.className = "timeline-item substage completed";
@@ -760,7 +764,9 @@ runForm.addEventListener("submit", async (event) => {
 
     resetInterface();
     setRunningState(true);
-    activityEmpty.hidden = true;
+    if (activityEmpty && activityEmpty.parentNode === timeline) {
+        timeline.removeChild(activityEmpty);
+    }
     planEmpty.hidden = false;
 
     try {
