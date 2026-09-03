@@ -33,6 +33,11 @@
 
     <link
         rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css"
+    >
+
+    <link
+        rel="stylesheet"
         href="{{ url_for('static', path='css/style.css') }}"
     >
 </head>
@@ -89,23 +94,6 @@
                     Generate visuals
                 </div>
             </div>
-
-            <div class="server-status">
-                <div
-                    id="healthDot"
-                    class="health-dot"
-                ></div>
-
-                <div>
-                    <strong id="healthText">
-                        Checking server
-                    </strong>
-
-                    <small>
-                        AgentPress Engine
-                    </small>
-                </div>
-            </div>
         </aside>
 
         <main class="main-content">
@@ -118,13 +106,6 @@
                     <h1>
                         Build exceptional blog posts
                     </h1>
-                </div>
-
-                <div
-                    id="runBadge"
-                    class="run-badge"
-                >
-                    Ready
                 </div>
             </header>
 
@@ -146,13 +127,79 @@
                 </div>
 
                 <form id="runForm">
-                    <textarea
-                        id="topicInput"
-                        maxlength="1000"
-                        rows="4"
-                        required
-                        placeholder="Example: The psychology of decision fatigue, or Building an event-driven RAG system with LangGraph"
-                    ></textarea>
+                    <div class="composer-settings-bar">
+                        <button
+                            type="button"
+                            id="settingsToggle"
+                            class="settings-toggle-button"
+                            aria-expanded="false"
+                        >
+                            <span>⚙ Editorial Settings</span>
+                            <span class="settings-summary" id="settingsSummary">Auto Genre · General Readers · Conversational</span>
+                            <span class="toggle-icon" id="settingsToggleIcon">▾</span>
+                        </button>
+
+                        <div class="composer-settings-drawer" id="composerSettings" hidden>
+                            <div class="setting-field">
+                                <label for="genreSelect">Format / Genre</label>
+                                <select id="genreSelect">
+                                    <option value="auto" selected>Auto-detect from prompt</option>
+                                    <option value="explainer">Deep-Dive Explainer</option>
+                                    <option value="story_narrative">Personal Story / Narrative</option>
+                                    <option value="thought_leadership">Thought Leadership</option>
+                                    <option value="tutorial">Practical Tutorial / How-To</option>
+                                    <option value="opinion_editorial">Opinion / Editorial Essay</option>
+                                    <option value="case_study">Case Study Analysis</option>
+                                    <option value="guide">Comprehensive Guide / Playbook</option>
+                                    <option value="news_roundup">News & Trends Roundup</option>
+                                    <option value="comparison">Side-by-Side Comparison</option>
+                                </select>
+                            </div>
+
+                            <div class="setting-field">
+                                <label for="audienceSelect">Target Audience</label>
+                                <select id="audienceSelect">
+                                    <option value="General Readers" selected>General Readers</option>
+                                    <option value="Founders, Executives & Business Leaders">Founders & Executives</option>
+                                    <option value="Software Engineers & Tech Leads">Developers & Architects</option>
+                                    <option value="Designers, Creators & Storytellers">Creators & Writers</option>
+                                    <option value="Students & Curious Learners">Students & Learners</option>
+                                </select>
+                            </div>
+
+                            <div class="setting-field">
+                                <label for="toneSelect">Voice & Tone</label>
+                                <select id="toneSelect">
+                                    <option value="Conversational & Insightful" selected>Conversational & Insightful</option>
+                                    <option value="Candid, direct and engaging">Candid & Engaging</option>
+                                    <option value="Analytical, rigorous and data-backed">Analytical & Rigorous</option>
+                                    <option value="Inspiring, reflective and philosophical">Inspiring & Reflective</option>
+                                    <option value="Witty, sharp and entertaining">Witty & Sharp</option>
+                                    <option value="Warm, accessible and empathetic">Warm & Approachable</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="textarea-wrapper">
+                        <textarea
+                            id="topicInput"
+                            maxlength="1000"
+                            rows="4"
+                            required
+                            placeholder="Example: The psychology of decision fatigue, or Building an event-driven RAG system with LangGraph"
+                        ></textarea>
+
+                        <div class="textarea-meta">
+                            <span class="shortcut-hint">
+                                <kbd>⌘</kbd> + <kbd>Enter</kbd> to run
+                            </span>
+
+                            <span class="char-counter" id="charCounter">
+                                0 / 1000
+                            </span>
+                        </div>
+                    </div>
 
                     <div class="composer-footer">
                         <div class="examples">
@@ -306,6 +353,14 @@
                         </span>
 
                         <h2>Generated article</h2>
+
+                        <div id="readingStats" class="reading-stats" hidden>
+                            <span id="statsWordCount">0 words</span>
+                            <span class="stat-sep">•</span>
+                            <span id="statsReadTime">0 min read</span>
+                            <span class="stat-sep">•</span>
+                            <span id="statsVisualCount">0 visuals</span>
+                        </div>
                     </div>
 
                     <div class="result-actions">
@@ -314,8 +369,32 @@
                             class="secondary-button"
                             type="button"
                             disabled
+                            title="Copy raw Markdown to clipboard"
                         >
-                            Copy Markdown
+                            <span class="btn-icon">📋</span>
+                            <span id="copyButtonText">Copy Markdown</span>
+                        </button>
+
+                        <button
+                            id="printButton"
+                            class="secondary-button"
+                            type="button"
+                            disabled
+                            title="Print or export as publication-ready PDF"
+                        >
+                            <span class="btn-icon">🖨️</span>
+                            <span>Print / PDF</span>
+                        </button>
+
+                        <button
+                            id="zenButton"
+                            class="secondary-button"
+                            type="button"
+                            disabled
+                            title="Toggle distraction-free full-width reading canvas"
+                        >
+                            <span class="btn-icon">⛶</span>
+                            <span id="zenButtonText">Zen Mode</span>
                         </button>
 
                         <a
@@ -323,8 +402,10 @@
                             class="secondary-button disabled"
                             href="#"
                             aria-disabled="true"
+                            title="Download formatted Markdown file"
                         >
-                            Download .md
+                            <span class="btn-icon">📥</span>
+                            <span>Download .md</span>
                         </a>
                     </div>
                 </div>
@@ -386,8 +467,8 @@
     ></div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
     <script
         src="{{ url_for('static', path='js/app.js') }}"

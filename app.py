@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -54,7 +54,7 @@ logger = logging.getLogger("langgraph-fastapi")
 # ---------------------------------------------------------
 app = FastAPI(
     title="AgentPress",
-    description="AgentPress - Autonomous Multi-Genre Blog Writing Agent.",
+    description="AgentPress - Autonomous Writing Studio and Editorial Engine.",
     version="1.0.0",
 )
 
@@ -92,7 +92,19 @@ class AgentRunRequest(BaseModel):
         ...,
         min_length=3,
         max_length=1000,
-        description="The blog topic, prompt, or story concept.",
+        description="The writeup topic, thesis, or story concept.",
+    )
+    genre: Optional[str] = Field(
+        default="auto",
+        description="Format: explainer, story_narrative, tutorial, thought_leadership, opinion_editorial, case_study, guide, news_roundup, comparison.",
+    )
+    audience: Optional[str] = Field(
+        default="",
+        description="Target audience (e.g. General Readers, Developers, Founders & Leaders).",
+    )
+    tone: Optional[str] = Field(
+        default="",
+        description="Desired voice and tone (e.g. Conversational, Witty, Analytical, Inspiring).",
     )
 
 
@@ -235,9 +247,14 @@ def save_final_markdown(
         exist_ok=True,
     )
 
-    output_file = run_directory / "blog.md"
-
+    output_file = run_directory / "writeup.md"
     output_file.write_text(
+        markdown,
+        encoding="utf-8",
+    )
+
+    # Maintain blog.md for backward compatibility
+    (run_directory / "blog.md").write_text(
         markdown,
         encoding="utf-8",
     )
@@ -251,21 +268,13 @@ def save_final_markdown(
 def stream_workflow(
     topic: str,
     run_id: str,
+    genre: str = "auto",
+    audience: str = "",
+    tone: str = "",
 ) -> Generator[str, None, None]:
     """
     Run the existing LangGraph workflow and stream
     observable execution updates to the browser.
-
-    This exposes:
-    - node status
-    - routing decision
-    - research queries and source count
-    - structured article plan
-    - completed sections
-    - image-processing status
-    - final Markdown
-
-    It does not expose private model reasoning.
     """
 
     config = {
@@ -274,8 +283,19 @@ def stream_workflow(
         }
     }
 
+    formatted_topic = topic
+    editorial_hints = []
+    if genre and genre != "auto":
+        editorial_hints.append(f"Format/Genre: {genre.replace('_', ' ').title()}")
+    if audience and audience.strip():
+        editorial_hints.append(f"Target Audience: {audience.strip()}")
+    if tone and tone.strip():
+        editorial_hints.append(f"Tone: {tone.strip()}")
+    if editorial_hints:
+        formatted_topic += f"\n\n[Editorial Preferences: {', '.join(editorial_hints)}]"
+
     workflow_input = {
-        "topic": topic,
+        "topic": formatted_topic,
         "sections": [],
     }
 
@@ -782,7 +802,7 @@ def home(request: Request):
         request=request,
         name="index.html",
         context={
-            "page_title": "AgentPress | Autonomous Blog Agent",
+            "page_title": "AgentPress | Autonomous Writing Studio",
         },
     )
 
@@ -817,6 +837,9 @@ def run_agent(request_data: AgentRunRequest):
         stream_workflow(
             topic=topic,
             run_id=run_id,
+            genre=request_data.genre or "auto",
+            audience=request_data.audience or "",
+            tone=request_data.tone or "",
         ),
         media_type="text/event-stream",
         headers={
@@ -849,19 +872,26 @@ def download_markdown(run_id: str):
     output_file = (
         OUTPUTS_DIR
         / safe_run_id
-        / "blog.md"
+        / "writeup.md"
     )
+
+    if not output_file.is_file():
+        output_file = (
+            OUTPUTS_DIR
+            / safe_run_id
+            / "blog.md"
+        )
 
     if not output_file.is_file():
         raise HTTPException(
             status_code=404,
-            detail="Generated Markdown file was not found.",
+            detail="Generated writeup file was not found.",
         )
 
     return FileResponse(
         path=output_file,
         media_type="text/markdown",
-        filename=f"agentpress-blog-{safe_run_id[:8]}.md",
+        filename=f"agentpress-writeup-{safe_run_id[:8]}.md",
     )
 
 
