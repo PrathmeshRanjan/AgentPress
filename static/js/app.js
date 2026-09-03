@@ -539,7 +539,7 @@ function completeSection(event) {
  * Renders final Markdown, sanitizes HTML, attaches per-code copy buttons,
  * and displays calculated reading metrics.
  */
-function displayFinalResult(event) {
+function displayFinalResult(event, shouldRefreshHistory = true) {
     finalMarkdown = event.markdown || "";
 
     // Raw Markdown tab
@@ -590,10 +590,12 @@ function displayFinalResult(event) {
     updateProgress(100);
 
     // Refresh history list so the new writeup appears in sidebar
-    loadHistory();
+    if (shouldRefreshHistory) {
+        loadHistory();
+    }
 
     // Smooth-scroll down to deliverable
-    document.getElementById("resultCard").scrollIntoView({
+    document.getElementById("resultCard")?.scrollIntoView({
         behavior: "smooth",
         block: "start",
     });
@@ -1056,18 +1058,25 @@ async function openPreviousWriteup(runId) {
         const data = await res.json();
 
         // Switch to Preview tab
-        tabPreview.click();
+        if (previewTab) {
+            previewTab.click();
+        }
 
-        // Render into deliverable pane
-        displayFinalResult({
-            markdown: data.markdown,
-            download_url: data.download_url,
-        });
+        // Render into deliverable pane without re-fetching history
+        displayFinalResult(
+            {
+                markdown: data.markdown,
+                download_url: data.download_url,
+            },
+            false
+        );
 
         // Set topic input to article topic
         if (topicInput && data.topic) {
             topicInput.value = data.topic;
-            charCounter.textContent = `${data.topic.length} / 1000`;
+            if (charCounter) {
+                charCounter.textContent = `${data.topic.length} / 1000`;
+            }
         }
 
         showToast(`Opened: ${data.title}`);
