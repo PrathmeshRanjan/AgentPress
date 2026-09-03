@@ -31,6 +31,13 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Get ECR Auth Token for Remote Host
+        id: ecr-token
+        run: |
+          TOKEN=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
       - name: Build, Tag, and Push Docker Image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -42,37 +49,44 @@ jobs:
 
       - name: Deploy to Existing EC2 Instance via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_TOKEN: ${{ steps.ecr-token.outputs.token }}
+          ECR_REPO: ${{ env.ECR_REPOSITORY }}
+          CONTAINER: ${{ env.CONTAINER_NAME }}
+          PORT: ${{ env.HOST_PORT }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER || 'ubuntu' }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ECR_REGISTRY,ECR_TOKEN,ECR_REPO,CONTAINER,PORT
           script: |
             set -e
-            echo "==> Authenticating Docker to Amazon ECR on EC2..."
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            echo "==> Authenticating Docker to Amazon ECR on EC2 (no AWS CLI needed)..."
+            echo "$ECR_TOKEN" | docker login --username AWS --password-stdin $ECR_REGISTRY
 
             echo "==> Pulling latest AgentPress image..."
-            docker pull ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            docker pull $ECR_REGISTRY/$ECR_REPO:latest
 
             echo "==> Stopping prior AgentPress container (if running)..."
-            docker stop ${{ env.CONTAINER_NAME }} || true
-            docker rm ${{ env.CONTAINER_NAME }} || true
+            docker stop $CONTAINER || true
+            docker rm $CONTAINER || true
 
-            echo "==> Ensuring persistent volume directories exist on host..."
+            echo "==> Ensuring persistent volume directories and env file exist on host..."
             mkdir -p ~/agentpress-data/images ~/agentpress-data/outputs
+            touch ~/agentpress.env
 
-            echo "==> Running new AgentPress container on port ${{ env.HOST_PORT }}..."
+            echo "==> Running new AgentPress container on port $PORT..."
             docker run -d \
-              --name ${{ env.CONTAINER_NAME }} \
+              --name $CONTAINER \
               --restart unless-stopped \
-              -p ${{ env.HOST_PORT }}:8000 \
+              -p $PORT:8000 \
               --env-file ~/agentpress.env \
               -v ~/agentpress-data/images:/app/images \
               -v ~/agentpress-data/outputs:/app/outputs \
-              ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+              $ECR_REGISTRY/$ECR_REPO:latest
 
             echo "==> Pruning dangling images..."
             docker image prune -f
 
-            echo "==> AgentPress deployed successfully on port ${{ env.HOST_PORT }}!"
-
+            echo "==> AgentPress deployed successfully on port $PORT!"
