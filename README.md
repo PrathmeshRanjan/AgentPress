@@ -275,9 +275,3 @@ Deployment is automated through GitHub Actions upon every push to the `main` bra
 1. **Build & Authenticate:** The runner builds the Docker image and logs into Amazon ECR using AWS credentials.
 2. **Push:** The tagged image is pushed to the private Amazon ECR repository.
 3. **Deploy over SSH:** The workflow connects to the EC2 host via SSH, prunes dangling images to preserve disk space, pulls the latest image, and restarts the container with volume mounts for persistent data (`outputs/` and `images/`).
-
----
-
-## License
-
-This project is licensed under the MIT License. See `LICENSE` for details.
