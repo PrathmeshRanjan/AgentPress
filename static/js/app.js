@@ -94,7 +94,7 @@ const stageProgress = {
 
 if (window.marked) {
     marked.setOptions({
-        breaks: true,
+        breaks: false,
         gfm: true,
         highlight: function (code, lang) {
             if (window.hljs) {
