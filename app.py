@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 import uuid
+from time import perf_counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Optional
@@ -251,6 +252,8 @@ def save_final_markdown(
     genre: str = "",
     audience: str = "",
     tone: str = "",
+    telemetry: Optional[dict[str, Any]] = None,
+    pipeline_metadata: Optional[dict[str, Any]] = None,
 ) -> Path:
     """
     Save the generated Markdown writeup and persist structured metadata for history browsing.
@@ -290,6 +293,8 @@ def save_final_markdown(
         "read_time_minutes": read_time,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "download_url": f"/api/runs/{run_id}/download",
+        "telemetry": telemetry or {},
+        "pipeline_metadata": pipeline_metadata or {},
     }
     try:
         (run_directory / "meta.json").write_text(
@@ -320,7 +325,8 @@ def stream_workflow(
     config = {
         "configurable": {
             "thread_id": run_id,
-        }
+        },
+        "recursion_limit": 50,
     }
 
     formatted_topic = topic
@@ -337,12 +343,18 @@ def stream_workflow(
     workflow_input = {
         "topic": formatted_topic,
         "sections": [],
+        "feedback_history": [],
+        "telemetry_events": [],
+        "revision_count": 0,
+        "pipeline_started_at": perf_counter(),
+        "enable_images": True,
     }
 
     task_map: dict[int, dict[str, Any]] = {}
     completed_task_ids: set[int] = set()
 
     final_markdown = ""
+    final_result: dict[str, Any] = {}
     workers_completed_event_sent = False
     reducer_started_event_sent = False
 
@@ -680,6 +692,42 @@ def stream_workflow(
                     )
 
                 # =================================================
+                # Editorial and factual feedback loop
+                # =================================================
+                elif node_name in {"editor", "fact_checker"}:
+                    approved_key = (
+                        "editor_approved"
+                        if node_name == "editor"
+                        else "fact_checker_approved"
+                    )
+                    yield create_sse_event(
+                        {
+                            "type": "review",
+                            "reviewer": node_name,
+                            "approved": bool(node_update.get(approved_key, False)),
+                            "feedback": node_update.get("feedback_history", []),
+                        }
+                    )
+
+                elif node_name == "revision_writer":
+                    yield create_sse_event(
+                        {
+                            "type": "revision",
+                            "revision_count": node_update.get("revision_count", 0),
+                            "max_revisions": 3,
+                        }
+                    )
+
+                elif node_name == "mark_unresolved":
+                    yield create_sse_event(
+                        {
+                            "type": "circuit_breaker",
+                            "unresolved_errors": True,
+                            "details": node_update.get("unresolved_error_details", []),
+                        }
+                    )
+
+                # =================================================
                 # Reducer subgraph: image plan
                 # =================================================
                 elif node_name == "decide_images":
@@ -737,38 +785,33 @@ def stream_workflow(
                     )
 
                 # =================================================
-                # Root reducer update
+                # Final telemetry payload
                 # =================================================
-                elif node_name == "reducer":
-                    generated_final = node_update.get(
-                        "final"
-                    )
-
-                    if generated_final:
-                        final_markdown = str(
-                            generated_final
-                        )
+                elif node_name == "finalize_result":
+                    result_value = node_update.get("result")
+                    if isinstance(result_value, dict):
+                        final_result = result_value
 
         # -----------------------------------------------------
-        # Retrieve the final checkpoint when the root reducer
-        # update did not contain the complete final output.
+        # Retrieve the final checkpoint to recover the complete result payload.
         # -----------------------------------------------------
-        if not final_markdown:
-            snapshot = workflow.get_state(config)
+        snapshot = workflow.get_state(config)
+        state_values = getattr(
+            snapshot,
+            "values",
+            {},
+        )
 
-            state_values = getattr(
-                snapshot,
-                "values",
-                {},
-            )
-
-            if isinstance(state_values, dict):
+        if isinstance(state_values, dict):
+            if not final_markdown:
                 final_markdown = str(
                     state_values.get(
                         "final",
                         "",
                     )
                 )
+            if not final_result and isinstance(state_values.get("result"), dict):
+                final_result = state_values["result"]
 
         if not final_markdown:
             raise RuntimeError(
@@ -782,6 +825,8 @@ def stream_workflow(
             genre=genre,
             audience=audience,
             tone=tone,
+            telemetry=final_result.get("telemetry", {}),
+            pipeline_metadata=final_result.get("metadata", {}),
         )
 
         yield create_sse_event(
@@ -802,6 +847,8 @@ def stream_workflow(
                 "download_url": (
                     f"/api/runs/{run_id}/download"
                 ),
+                "metadata": final_result.get("metadata", {}),
+                "telemetry": final_result.get("telemetry", {}),
             }
         )
 
@@ -1040,6 +1087,8 @@ def get_run_details(run_id: str):
         "read_time_minutes": meta.get("read_time_minutes") or max(1, round(words / 220)),
         "created_at": meta.get("created_at") or datetime.fromtimestamp(writeup_file.stat().st_mtime, tz=timezone.utc).isoformat(),
         "download_url": f"/api/runs/{safe_run_id}/download",
+        "telemetry": meta.get("telemetry", {}),
+        "pipeline_metadata": meta.get("pipeline_metadata", {}),
     }
 
 

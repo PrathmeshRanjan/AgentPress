@@ -2,7 +2,7 @@
 
 A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates essays, analytical articles, and comprehensive writeups across any domain using LangGraph, FastAPI, and Docker.
 
-[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Reducer Subgraph Deep Dive](#reducer-subgraph-deep-dive) • [Data Contracts & Validation](#data-contracts-and-validation) • [Resilience & Fallback](#resilience-and-fault-tolerance) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally)
+[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Review Loop Deep Dive](#review-loop-deep-dive) • [Data Contracts & Validation](#data-contracts-and-validation) • [Resilience & Fallback](#resilience-and-fault-tolerance) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally)
 
 ---
 
@@ -18,7 +18,7 @@ Hosted on an AWS EC2 instance (`ap-south-1`) inside a Docker container, with con
 
 ## Architecture Overview
 
-AgentPress separates responsibilities across specialized nodes in a LangGraph StateGraph, using dynamic worker fan-out for drafting and an independent compiled subgraph for final reduction, image placement, and synthesis.
+AgentPress separates responsibilities across specialized nodes in a LangGraph StateGraph, using dynamic worker fan-out for drafting, bounded editorial feedback cycles, factual review, and final image placement.
 
 ```mermaid
 flowchart TD
@@ -38,20 +38,31 @@ flowchart TD
         FanoutFork -->|"Task 2 Payload"| WorkerNode2["worker_node (Section 2)"]
         FanoutFork -->|"Task N Payload"| WorkerNodeN["worker_node (Section N)"]
 
-        subgraph ReducerSubgraph ["Nested Subgraph: reducer_subgraph (StateGraph)"]
-            MergeNode["4a. merge_content<br/>Sort by task.id & build unified draft"]
-            DecideImagesNode["4b. decide_images<br/>Analyze density & place image tags"]
-            GenerateImagesNode["4c. generate_and_place_images<br/>Gemini 2.5 Flash Image & fallback callouts"]
-
-            MergeNode --> DecideImagesNode
-            DecideImagesNode --> GenerateImagesNode
-        end
+        MergeNode["4. merge_content<br/>Sort by task.id & build unified draft"]
+        EditorNode{"5. editor<br/>Publication-ready?"}
+        FactNode{"6. fact_checker<br/>Claims supported?"}
+        RevisionNode["revision_writer<br/>Apply critique history"]
+        BreakerNode["mark_unresolved<br/>Return best draft + flag"]
+        DecideImagesNode["7. decide_images<br/>Analyze density & place image tags"]
+        GenerateImagesNode["8. generate_and_place_images<br/>Gemini image generation"]
 
         WorkerNode1 -->|"sections: (1, md)"| MergeNode
         WorkerNode2 -->|"sections: (2, md)"| MergeNode
         WorkerNodeN -->|"sections: (N, md)"| MergeNode
 
-        GenerateImagesNode --> EndNode(["END: Final Article Ready"])
+        MergeNode --> EditorNode
+        EditorNode -->|"approved"| FactNode
+        EditorNode -->|"rejected; revisions < 3"| RevisionNode
+        FactNode -->|"rejected; revisions < 3"| RevisionNode
+        RevisionNode --> EditorNode
+        EditorNode -->|"rejected; revisions = 3"| BreakerNode
+        FactNode -->|"rejected; revisions = 3"| BreakerNode
+        FactNode -->|"approved"| DecideImagesNode
+        BreakerNode --> DecideImagesNode
+        DecideImagesNode --> GenerateImagesNode
+
+        GenerateImagesNode --> FinalizeNode["Aggregate telemetry and result metadata"]
+        FinalizeNode --> EndNode(["END: Final Article Ready"])
     end
 
     subgraph ResilienceEngine ["Model Layer & 429 Fallback"]
@@ -69,6 +80,10 @@ flowchart TD
     WorkerNode1 -.-> ResilienceEngine
     DecideImagesNode -.-> ResilienceEngine
 ```
+
+After section assembly, the root graph runs an Editor and Fact-Checker gate. A rejection appends structured critique to `feedback_history` and routes the draft through `revision_writer` before it is reviewed again. `revision_count` permits at most three revisions; a further rejection trips `mark_unresolved`, returns the highest-scoring reviewed draft, and sets `metadata.unresolved_errors=true`.
+
+Every agent/node invocation emits provider-normalized latency, input tokens, output tokens, estimated USD cost, model identity, and status. Parallel Writer events are merged through an annotated state reducer. The final SSE JSON, saved run metadata, and direct graph result all include both per-invocation events and end-to-end totals.
 
 ---
 
@@ -91,9 +106,17 @@ class State(TypedDict):
     md_with_placeholders: str
     image_specs: List[dict]
     final: str
+    revision_count: int
+    feedback_history: Annotated[List[dict], operator.add]
+    unresolved_errors: bool
+    telemetry_events: Annotated[List[dict], operator.add]
+    telemetry: dict
+    result: dict
 ```
 - **`sections` Channel:** Decorated with `Annotated[..., operator.add]` so parallel workers can asynchronously append section tuples `(task.id, section_markdown)` without state collision or race conditions.
 - **`plan` Channel:** Stores the structured editorial blueprint created by the orchestrator.
+- **`feedback_history` and `revision_count`:** Carry critiques across cycles and enforce the hard stop.
+- **`telemetry_events`:** Uses the same reducer pattern to merge metrics from parallel Writer invocations safely.
 
 ---
 
@@ -144,29 +167,20 @@ class State(TypedDict):
 
 ---
 
-## Reducer Subgraph Deep Dive
+## Review Loop Deep Dive
 
-A major feature of `backend.py` is the **Reducer Subgraph** (`reducer_subgraph`). Rather than merging text in a single node, post-processing is modeled as an independent compiled StateGraph mounted directly into the main graph:
+A major feature of `backend.py` is its bounded cyclic review path. Editorial and factual rejection both route to the full-draft Writer, and every rejection remains available in state:
 
 ```python
-# Build the Reducer Subgraph
-reducer_graph = StateGraph(State)
-reducer_graph.add_node("merge_content", merge_content)
-reducer_graph.add_node("decide_images", decide_images)
-reducer_graph.add_node("generate_and_place_images", generate_and_place_images)
-
-reducer_graph.add_edge(START, "merge_content")
-reducer_graph.add_edge("merge_content", "decide_images")
-reducer_graph.add_edge("decide_images", "generate_and_place_images")
-reducer_graph.add_edge("generate_and_place_images", END)
-
-reducer_subgraph = reducer_graph.compile()
-
-# Mount into Main Graph
-g.add_node("reducer", reducer_subgraph)
+def route_after_editor(state):
+    if state.get("editor_approved", False):
+        return "fact_checker"
+    if state.get("revision_count", 0) >= MAX_REVISIONS:
+        return "unresolved"
+    return "revision_writer"
 ```
 
-### Subgraph Pipeline Stages:
+### Post-Draft Pipeline Stages:
 
 1. **`merge_content` (Deterministic Sorting & Assembly)**
    - Reads the accumulated `sections` list of tuples `(task.id, section_markdown)`.
@@ -176,12 +190,17 @@ g.add_node("reducer", reducer_subgraph)
      ```
    - Eliminates out-of-order race conditions from asynchronous workers and prefixes the master title.
 
-2. **`decide_images` (Contextual Visual Planning)**
+2. **`editor` and `fact_checker` (Structured Quality Gates)**
+   - Emit `ReviewDecision` objects with approval, score, and actionable critique.
+   - Append rejected feedback to `feedback_history` and route through `revision_writer`.
+   - Preserve the highest Editor-scored draft for graceful circuit-breaker output.
+
+3. **`decide_images` (Contextual Visual Planning)**
    - Analyzes the full assembled markdown draft.
    - Emits a structured `GlobalImagePlan` proposing up to 3 high-impact visual assets.
    - Identifies exact contextual paragraphs and injects image placeholder tags (`[[IMAGE_1]]`, `[[IMAGE_2]]`, `[[IMAGE_3]]`) on their own lines.
 
-3. **`generate_and_place_images` (Multimodal Synthesis & Fallback)**
+4. **`generate_and_place_images` (Multimodal Synthesis & Fallback)**
    - Iterates over planned image specifications and calls **Google Gemini 2.5 Flash Image** (`gemini-2.5-flash-image`).
    - Cleans filenames, writes image binaries to `images/<safe_filename>.png`, and substitutes the placeholder tags with markdown image syntax.
    - **Graceful Fallback:** If image generation hits rate limits, invalid credentials, or network errors, automatically injects a styled editorial callout box instead of failing the pipeline:
@@ -228,6 +247,31 @@ If Mistral Small hits rate limits at any stage (router, research extractor, orch
 
 ### 3. Environment Variable Sanitization
 On startup, `backend.py` automatically strips extraneous single quotes, double quotes, and trailing whitespace from API keys loaded via Docker `--env-file`.
+
+### 4. Bounded Review Cycles
+
+Editor or Fact-Checker rejection routes the draft back to the revision Writer with the complete critique history. After three revisions, a circuit breaker stops the graph and returns the best reviewed draft with explicit unresolved-error metadata instead of continuing to burn tokens.
+
+---
+
+## Observability and Benchmarking
+
+Run the reproducible five-topic benchmark (image generation is disabled for an apples-to-apples text comparison):
+
+```bash
+python benchmark.py
+python generate_report.py
+```
+
+If a provider quota interrupts a suite, rerun `python benchmark.py --resume`; completed topics are retained and only unfinished seeds run again.
+
+The benchmark produces:
+
+- `benchmark_results.jsonl`: machine-readable output, per-agent telemetry, and paired metrics.
+- `BENCHMARK_OUTPUTS.md`: complete baseline and multi-agent outputs side-by-side for human review.
+- `BENCHMARK_REPORT.md`: aggregate latency, token, cost, revision-loop metrics, and evidence-backed resume bullets.
+
+Token prices are centralized in `telemetry.py`. The checked-in defaults use standard paid-tier rates of $0.15/$0.60 per million input/output tokens for Mistral Small, $0.30/$2.50 for Gemini 2.5 Flash, and $0.30 input plus $30.00 per million image-output tokens for Gemini 2.5 Flash Image; update the table when provider pricing changes.
 
 ---
 

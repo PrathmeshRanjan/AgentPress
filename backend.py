@@ -44,8 +44,9 @@ from __future__ import annotations
 import os
 import re
 import operator
+from time import perf_counter
 from pathlib import Path
-from typing import TypedDict, List, Annotated, Literal, Optional
+from typing import TypedDict, List, Annotated, Literal, Optional, NotRequired
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -59,6 +60,13 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.memory import MemorySaver
+
+from telemetry import (
+    invoke_model,
+    invoke_structured_model,
+    make_event,
+    summarize_telemetry,
+)
 
 # Load environment variables (.env)
 load_dotenv()
@@ -83,6 +91,8 @@ if os.environ.get("GOOGLE_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
     os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+PRIMARY_MODEL_NAME = os.getenv("MODEL_NAME", "mistral-small-latest")
+MAX_REVISIONS = 3
 
 
 # ============================================================================
@@ -214,6 +224,26 @@ class GlobalImagePlan(BaseModel):
     images: List[ImageSpec] = Field(default_factory=list, description="Specs for up to 3 high-impact images or diagrams.")
 
 
+class ReviewDecision(BaseModel):
+    """A machine-routable editorial or factual review decision."""
+
+    approved: bool = Field(..., description="True only when the draft is ready to advance.")
+    score: int = Field(..., ge=1, le=10, description="Overall quality score from 1 to 10.")
+    critique: List[str] = Field(
+        default_factory=list,
+        description="Specific, actionable problems the Writer must correct before approval.",
+    )
+
+    @field_validator("critique", mode="before")
+    @classmethod
+    def sanitize_critique(cls, value):
+        if not value:
+            return []
+        if isinstance(value, str):
+            return [value.strip()]
+        return [str(item).strip() for item in value if str(item).strip()]
+
+
 # ============================================================================
 # 2. Graph State Definition
 # ============================================================================
@@ -242,13 +272,31 @@ class State(TypedDict):
     image_specs: List[dict]
     final: str
 
+    # Cyclic review state
+    revision_count: NotRequired[int]
+    editor_approved: NotRequired[bool]
+    fact_checker_approved: NotRequired[bool]
+    feedback_history: Annotated[List[dict], operator.add]
+    unresolved_errors: NotRequired[bool]
+    unresolved_error_details: NotRequired[List[str]]
+    best_draft: NotRequired[str]
+    best_editor_score: NotRequired[int]
+
+    # Observability state. Events use a reducer so parallel Writer workers can
+    # safely contribute one record each.
+    telemetry_events: Annotated[List[dict], operator.add]
+    pipeline_started_at: NotRequired[float]
+    telemetry: NotRequired[dict]
+    result: NotRequired[dict]
+    enable_images: NotRequired[bool]
+
 
 # ============================================================================
 # 2. LLM Initialization with Seamless 429 Rate-Limit Fallback to Gemini
 # ============================================================================
 
 # Primary Chat LLM (Mistral Small)
-primary_model = init_chat_model("mistralai:mistral-small-latest")
+primary_model = init_chat_model(f"mistralai:{PRIMARY_MODEL_NAME}")
 
 # Fallback Chat LLM (Google Gemini 2.5 Flash for 429 Rate-Limit Exceeded & Provider Errors)
 try:
@@ -288,19 +336,29 @@ If needs_research=true:
 
 def router_node(state: State) -> dict:
     """Evaluates whether the blog topic requires web research and generates search queries."""
+    started_at = perf_counter()
     topic = state["topic"]
-    decider = model.with_structured_output(RouterDecision)
-    decision = decider.invoke(
-        [
+    invocation = invoke_structured_model(
+        agent="router",
+        runnable=model,
+        schema=RouterDecision,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
             SystemMessage(content=ROUTER_SYSTEM),
             HumanMessage(content=f"Topic: {topic}"),
-        ]
+        ],
     )
+    decision = invocation.value
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
 
     return {
         "needs_research": decision.needs_research,
         "mode": decision.mode,
         "queries": decision.queries,
+        "revision_count": state.get("revision_count", 0),
+        "pipeline_started_at": state.get("pipeline_started_at", perf_counter()),
+        "telemetry_events": [event],
     }
 
 
@@ -354,6 +412,7 @@ Guidelines:
 
 def research_node(state: State) -> dict:
     """Executes search queries, filters noise, and extracts structured evidence."""
+    started_at = perf_counter()
     queries = state.get("queries", []) or []
     max_results = 5
     raw_results: List[dict] = []
@@ -365,19 +424,36 @@ def research_node(state: State) -> dict:
             print(f"[Warning] Web search failed for query '{q}': {e}")
 
     if not raw_results:
-        return {"evidence": []}
+        return {
+            "evidence": [],
+            "telemetry_events": [
+                make_event(agent="researcher", started_at=started_at)
+            ],
+        }
 
     try:
-        extractor = model.with_structured_output(EvidencePack)
-        pack = extractor.invoke(
-            [
+        invocation = invoke_structured_model(
+            agent="researcher",
+            runnable=model,
+            schema=EvidencePack,
+            configured_model=PRIMARY_MODEL_NAME,
+            messages=[
                 SystemMessage(content=RESEARCH_SYSTEM),
                 HumanMessage(content=f"Raw web search results:\n{raw_results[:20]}"),
-            ]
+            ],
         )
+        pack = invocation.value
+        event = invocation.event
+        event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
         evidence_items = pack.evidence or []
     except Exception as e:
         print(f"[Warning] Structured evidence extraction fallback triggered: {e}")
+        event = make_event(
+            agent="researcher",
+            started_at=started_at,
+            status="degraded",
+            error=str(e),
+        )
         evidence_items = []
         for r in raw_results:
             if r.get("url"):
@@ -397,7 +473,10 @@ def research_node(state: State) -> dict:
         if e.url:
             dedup[e.url] = e
 
-    return {"evidence": list(dedup.values())}
+    return {
+        "evidence": list(dedup.values()),
+        "telemetry_events": [event],
+    }
 
 
 # ============================================================================
@@ -436,13 +515,17 @@ Human Voice Mandate:
 
 def orchestrator_node(state: State) -> dict:
     """Produces the structured writeup outline (Plan) using available topic and research evidence."""
-    planner = model.with_structured_output(Plan)
+    started_at = perf_counter()
 
     evidence = state.get("evidence", [])
     mode = state.get("mode", "closed_book")
 
-    plan = planner.invoke(
-        [
+    invocation = invoke_structured_model(
+        agent="orchestrator",
+        runnable=model,
+        schema=Plan,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
             SystemMessage(content=ORCH_SYSTEM),
             HumanMessage(
                 content=(
@@ -452,10 +535,13 @@ def orchestrator_node(state: State) -> dict:
                     f"{[e.model_dump() for e in evidence][:16]}"
                 )
             ),
-        ]
+        ],
     )
+    plan = invocation.value
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
 
-    return {"plan": plan}
+    return {"plan": plan, "telemetry_events": [event]}
 
 
 # ============================================================================
@@ -516,6 +602,7 @@ Section Construction Rules:
 
 def worker_node(payload: dict) -> dict:
     """Executes an individual section generation task in parallel."""
+    started_at = perf_counter()
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
@@ -531,8 +618,11 @@ def worker_node(payload: dict) -> dict:
             for e in evidence[:20]
         )
 
-    section_md = model.invoke(
-        [
+    invocation = invoke_model(
+        agent=f"writer.section.{task.id}",
+        runnable=model,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
             SystemMessage(content=WORKER_SYSTEM),
             HumanMessage(
                 content=(
@@ -555,15 +645,21 @@ def worker_node(payload: dict) -> dict:
                     f"Available Verified Evidence (cite with [Source](URL) where relevant):\n{evidence_text}\n"
                 )
             ),
-        ]
-    ).content.strip()
+        ],
+    )
+    section_md = invocation.value.content.strip()
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
 
     # Return indexed tuple so the reducer can sort deterministically
-    return {"sections": [(task.id, section_md)]}
+    return {
+        "sections": [(task.id, section_md)],
+        "telemetry_events": [event],
+    }
 
 
 # ============================================================================
-# 7. Reducer Subgraph (Assembly, Visual Planning & Gemini Generation)
+# 7. Assembly, Review, Visual Planning & Gemini Generation
 # ============================================================================
 
 def _sanitize_filename(title: str, max_length: int = 80) -> str:
@@ -577,6 +673,7 @@ def merge_content(state: State) -> dict:
     Stitches all parallel worker outputs in strict task ID order.
     Eliminates race conditions where workers completing out of order could scramble the article.
     """
+    started_at = perf_counter()
     plan = state["plan"]
     assert plan is not None, "Plan must be present to merge content."
 
@@ -585,7 +682,191 @@ def merge_content(state: State) -> dict:
     body = "\n\n".join(ordered_sections).strip()
     merged_md = f"# {plan.blog_title}\n\n{body}\n"
 
-    return {"merged_md": merged_md}
+    return {
+        "merged_md": merged_md,
+        "best_draft": merged_md,
+        "best_editor_score": 0,
+        "telemetry_events": [
+            make_event(agent="draft_assembler", started_at=started_at)
+        ],
+    }
+
+
+# ============================================================================
+# 7. Editorial and Factual Review Loop
+# ============================================================================
+
+EDITOR_SYSTEM = """You are the senior Editor for a production publication.
+Review the full Markdown draft for structure, clarity, audience fit, completeness, repetition,
+and prose quality. Approve only when it is publication-ready. When rejecting it, return a short,
+prioritized list of concrete changes the Writer can execute. Do not rewrite the article yourself.
+Output strictly as ReviewDecision."""
+
+FACT_CHECK_SYSTEM = """You are a rigorous Fact-Checker. Compare factual claims in the draft with
+the supplied evidence. Reject invented citations, unsupported precise claims, contradictions,
+and claims presented with more certainty than the evidence supports. For closed-book essays,
+distinguish ordinary stable knowledge from claims that genuinely require a source. When rejecting,
+give specific corrections the Writer can apply. Output strictly as ReviewDecision."""
+
+REVISION_SYSTEM = """You are the lead Writer revising a complete Markdown article after review.
+Return the entire revised article, including its H1 title. Apply every actionable critique while
+preserving strong material, source links, and the requested voice. Never add unsupported facts or
+invent citations. Output only the complete revised Markdown article."""
+
+
+def editor_node(state: State) -> dict:
+    """Gate the draft on editorial quality and append rejection feedback to memory."""
+    started_at = perf_counter()
+    invocation = invoke_structured_model(
+        agent="editor",
+        runnable=model,
+        schema=ReviewDecision,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
+            SystemMessage(content=EDITOR_SYSTEM),
+            HumanMessage(
+                content=(
+                    f"Topic: {state['topic']}\n"
+                    f"Revision number: {state.get('revision_count', 0)} of {MAX_REVISIONS}\n\n"
+                    f"Draft:\n{state['merged_md']}"
+                )
+            ),
+        ],
+    )
+    decision = invocation.value
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
+
+    current_best_score = state.get("best_editor_score", 0)
+    update: dict = {
+        "editor_approved": decision.approved,
+        "telemetry_events": [event],
+    }
+    if decision.score >= current_best_score:
+        update["best_editor_score"] = decision.score
+        update["best_draft"] = state["merged_md"]
+    if not decision.approved:
+        critique = decision.critique or ["The Editor rejected the draft without detailed feedback."]
+        update["feedback_history"] = [
+            {
+                "source": "editor",
+                "revision": state.get("revision_count", 0),
+                "score": decision.score,
+                "critique": critique,
+            }
+        ]
+    return update
+
+
+def route_after_editor(state: State) -> Literal["fact_checker", "revision_writer", "unresolved"]:
+    if state.get("editor_approved", False):
+        return "fact_checker"
+    if state.get("revision_count", 0) >= MAX_REVISIONS:
+        return "unresolved"
+    return "revision_writer"
+
+
+def fact_checker_node(state: State) -> dict:
+    """Gate factual integrity and append rejection feedback to memory."""
+    started_at = perf_counter()
+    evidence = [
+        item.model_dump() if hasattr(item, "model_dump") else item
+        for item in state.get("evidence", [])
+    ]
+    invocation = invoke_structured_model(
+        agent="fact_checker",
+        runnable=model,
+        schema=ReviewDecision,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
+            SystemMessage(content=FACT_CHECK_SYSTEM),
+            HumanMessage(
+                content=(
+                    f"Research mode: {state.get('mode', 'closed_book')}\n"
+                    f"Verified evidence:\n{evidence[:20]}\n\n"
+                    f"Draft:\n{state['merged_md']}"
+                )
+            ),
+        ],
+    )
+    decision = invocation.value
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
+    update: dict = {
+        "fact_checker_approved": decision.approved,
+        "telemetry_events": [event],
+    }
+    if not decision.approved:
+        critique = decision.critique or ["The Fact-Checker rejected the draft without detailed feedback."]
+        update["feedback_history"] = [
+            {
+                "source": "fact_checker",
+                "revision": state.get("revision_count", 0),
+                "score": decision.score,
+                "critique": critique,
+            }
+        ]
+    return update
+
+
+def route_after_fact_checker(state: State) -> Literal["approved", "revision_writer", "unresolved"]:
+    if state.get("fact_checker_approved", False):
+        return "approved"
+    if state.get("revision_count", 0) >= MAX_REVISIONS:
+        return "unresolved"
+    return "revision_writer"
+
+
+def revision_writer_node(state: State) -> dict:
+    """Rewrite the full draft using all accumulated Editor/Fact-Checker feedback."""
+    started_at = perf_counter()
+    next_revision = state.get("revision_count", 0) + 1
+    feedback = state.get("feedback_history", [])
+    invocation = invoke_model(
+        agent="writer.revision",
+        runnable=model,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
+            SystemMessage(content=REVISION_SYSTEM),
+            HumanMessage(
+                content=(
+                    f"Topic: {state['topic']}\n"
+                    f"Revision: {next_revision} of {MAX_REVISIONS}\n"
+                    f"Review history:\n{feedback}\n\n"
+                    f"Current draft:\n{state['merged_md']}"
+                )
+            ),
+        ],
+    )
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
+    return {
+        "merged_md": invocation.value.content.strip(),
+        "revision_count": next_revision,
+        "editor_approved": False,
+        "fact_checker_approved": False,
+        "telemetry_events": [event],
+    }
+
+
+def mark_unresolved_node(state: State) -> dict:
+    """Trip the circuit breaker and preserve the highest-scoring reviewed draft."""
+    started_at = perf_counter()
+    feedback = state.get("feedback_history", [])
+    latest_feedback = feedback[-1] if feedback else {}
+    details = [
+        str(item)
+        for item in latest_feedback.get("critique", [])
+        if item
+    ]
+    return {
+        "merged_md": state.get("best_draft") or state["merged_md"],
+        "unresolved_errors": True,
+        "unresolved_error_details": details,
+        "telemetry_events": [
+            make_event(agent="circuit_breaker", started_at=started_at)
+        ],
+    }
 
 
 DECIDE_IMAGES_SYSTEM = """You are an expert creative director and editorial illustrator for AgentPress.
@@ -613,13 +894,30 @@ Output strictly as GlobalImagePlan.
 
 def decide_images(state: State) -> dict:
     """Analyzes the full draft and determines strategic image prompts and placeholder positions."""
-    planner = model.with_structured_output(GlobalImagePlan)
+    started_at = perf_counter()
     merged_md = state["merged_md"]
     plan = state["plan"]
     assert plan is not None
 
-    image_plan = planner.invoke(
-        [
+    if not state.get("enable_images", True):
+        return {
+            "md_with_placeholders": merged_md,
+            "image_specs": [],
+            "telemetry_events": [
+                make_event(
+                    agent="image_planner",
+                    started_at=started_at,
+                    status="skipped",
+                )
+            ],
+        }
+
+    invocation = invoke_structured_model(
+        agent="image_planner",
+        runnable=model,
+        schema=GlobalImagePlan,
+        configured_model=PRIMARY_MODEL_NAME,
+        messages=[
             SystemMessage(content=DECIDE_IMAGES_SYSTEM),
             HumanMessage(
                 content=(
@@ -630,16 +928,20 @@ def decide_images(state: State) -> dict:
                     f"Full Blog Draft:\n\n{merged_md}"
                 )
             ),
-        ]
+        ],
     )
+    image_plan = invocation.value
+    event = invocation.event
+    event["latency_ms"] = round((perf_counter() - started_at) * 1000, 2)
 
     return {
         "md_with_placeholders": image_plan.md_with_placeholders,
         "image_specs": [img.model_dump() for img in image_plan.images],
+        "telemetry_events": [event],
     }
 
 
-def _gemini_generate_image_bytes(prompt: str) -> bytes:
+def _gemini_generate_image_bytes(prompt: str) -> tuple[bytes, int, int]:
     """
     Calls the Google GenAI SDK to generate image bytes via gemini-2.5-flash-image.
     Requires `google-genai` package and `GOOGLE_API_KEY` set in environment.
@@ -680,10 +982,13 @@ def _gemini_generate_image_bytes(prompt: str) -> bytes:
     if not parts:
         raise RuntimeError("No image content returned from Gemini API.")
 
+    usage = getattr(resp, "usage_metadata", None)
+    prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+    completion_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
     for part in parts:
         inline = getattr(part, "inline_data", None)
         if inline and getattr(inline, "data", None):
-            return inline.data
+            return inline.data, prompt_tokens, completion_tokens
 
     raise RuntimeError("No inline image data found in Gemini response.")
 
@@ -693,6 +998,7 @@ def generate_and_place_images(state: State) -> dict:
     Generates requested images, caches them locally in './images/', replaces placeholders,
     and saves the finished Markdown document to disk.
     """
+    started_at = perf_counter()
     plan = state["plan"]
     assert plan is not None
 
@@ -707,11 +1013,26 @@ def generate_and_place_images(state: State) -> dict:
 
     # If no images were planned, export the text directly
     if not image_specs:
-        out_file.write_text(md, encoding="utf-8")
-        return {"final": md}
+        if state.get("enable_images", True):
+            out_file.write_text(md, encoding="utf-8")
+        return {
+            "final": md,
+            "telemetry_events": [
+                make_event(
+                    agent="image_generator",
+                    started_at=started_at,
+                    configured_model="gemini-2.5-flash-image",
+                    status="skipped",
+                )
+            ],
+        }
 
     images_dir = base_dir / "images"
     images_dir.mkdir(exist_ok=True)
+    generation_errors: List[str] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    generated_images = 0
 
     for spec in image_specs:
         placeholder = spec["placeholder"]
@@ -723,7 +1044,10 @@ def generate_and_place_images(state: State) -> dict:
         # Local caching: Skip generation if the image was already generated previously
         if not out_path.exists():
             try:
-                img_bytes = _gemini_generate_image_bytes(spec["prompt"])
+                img_bytes, input_count, output_count = _gemini_generate_image_bytes(spec["prompt"])
+                prompt_tokens += input_count
+                completion_tokens += output_count
+                generated_images += 1
                 out_path.write_bytes(img_bytes)
             except Exception as e:
                 # Graceful degradation: If image generation fails (rate limit, missing key, etc.),
@@ -734,6 +1058,7 @@ def generate_and_place_images(state: State) -> dict:
                     f"> *Illustration Concept:* {spec.get('prompt', '')}\n"
                 )
                 md = md.replace(placeholder, callout)
+                generation_errors.append(str(e))
                 continue
 
         # Replace placeholder with standard Markdown image syntax and caption
@@ -741,35 +1066,84 @@ def generate_and_place_images(state: State) -> dict:
         md = md.replace(placeholder, img_md)
 
     out_file.write_text(md, encoding="utf-8")
-    return {"final": md}
+    if generated_images and completion_tokens == 0:
+        # Gemini documents 1,290 output tokens for each image up to 1024x1024.
+        completion_tokens = generated_images * 1290
+    return {
+        "final": md,
+        "telemetry_events": [
+            make_event(
+                agent="image_generator",
+                started_at=started_at,
+                configured_model="gemini-2.5-flash-image",
+                status=(
+                    "degraded"
+                    if generation_errors
+                    else "success"
+                    if generated_images
+                    else "cached"
+                ),
+                error="; ".join(generation_errors) if generation_errors else None,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+        ],
+    }
+
+
+def finalize_result_node(state: State) -> dict:
+    """Attach aggregate telemetry and circuit-breaker metadata to the final JSON payload."""
+    started_at = perf_counter()
+    finalizer_event = make_event(agent="result_finalizer", started_at=started_at)
+    events = [*state.get("telemetry_events", []), finalizer_event]
+    pipeline_started_at = state.get("pipeline_started_at", started_at)
+    telemetry = summarize_telemetry(
+        events,
+        pipeline_latency_ms=(perf_counter() - pipeline_started_at) * 1000,
+        revision_count=state.get("revision_count", 0),
+    )
+    metadata = {
+        "status": "completed_with_unresolved_errors"
+        if state.get("unresolved_errors", False)
+        else "completed",
+        "unresolved_errors": state.get("unresolved_errors", False),
+        "unresolved_error_details": state.get("unresolved_error_details", []),
+        "revision_count": state.get("revision_count", 0),
+        "max_revisions": MAX_REVISIONS,
+    }
+    result = {
+        "content": state["final"],
+        "metadata": metadata,
+        "telemetry": telemetry,
+    }
+    return {
+        "telemetry_events": [finalizer_event],
+        "telemetry": telemetry,
+        "result": result,
+    }
 
 
 # ============================================================================
 # 8. Graph Construction & Compilation
 # ============================================================================
 
-# Step A: Build the Reducer Subgraph
-# Encapsulates text merging, image planning, and generation into a modular sub-pipeline.
-reducer_graph = StateGraph(State)
-reducer_graph.add_node("merge_content", merge_content)
-reducer_graph.add_node("decide_images", decide_images)
-reducer_graph.add_node("generate_and_place_images", generate_and_place_images)
-
-reducer_graph.add_edge(START, "merge_content")
-reducer_graph.add_edge("merge_content", "decide_images")
-reducer_graph.add_edge("decide_images", "generate_and_place_images")
-reducer_graph.add_edge("generate_and_place_images", END)
-reducer_subgraph = reducer_graph.compile()
-
-# Step B: Build the Main Graph
+# Build the main graph. Review nodes live in the root graph because their
+# conditional edges intentionally form a bounded cycle back to the Writer.
 g = StateGraph(State)
 g.add_node("router", router_node)
 g.add_node("research", research_node)
 g.add_node("orchestrator", orchestrator_node)
 g.add_node("worker", worker_node)
-g.add_node("reducer", reducer_subgraph)
+g.add_node("merge_content", merge_content)
+g.add_node("editor", editor_node)
+g.add_node("fact_checker", fact_checker_node)
+g.add_node("revision_writer", revision_writer_node)
+g.add_node("mark_unresolved", mark_unresolved_node)
+g.add_node("decide_images", decide_images)
+g.add_node("generate_and_place_images", generate_and_place_images)
+g.add_node("finalize_result", finalize_result_node)
 
-# Step C: Define Control Flow & Edges
+# Define control flow and bounded feedback edges.
 g.add_edge(START, "router")
 g.add_conditional_edges(
     "router",
@@ -778,11 +1152,34 @@ g.add_conditional_edges(
 )
 g.add_edge("research", "orchestrator")
 g.add_conditional_edges("orchestrator", fanout, ["worker"])
-g.add_edge("worker", "reducer")
-g.add_edge("reducer", END)
+g.add_edge("worker", "merge_content")
+g.add_edge("merge_content", "editor")
+g.add_conditional_edges(
+    "editor",
+    route_after_editor,
+    {
+        "fact_checker": "fact_checker",
+        "revision_writer": "revision_writer",
+        "unresolved": "mark_unresolved",
+    },
+)
+g.add_conditional_edges(
+    "fact_checker",
+    route_after_fact_checker,
+    {
+        "approved": "decide_images",
+        "revision_writer": "revision_writer",
+        "unresolved": "mark_unresolved",
+    },
+)
+g.add_edge("revision_writer", "editor")
+g.add_edge("mark_unresolved", "decide_images")
+g.add_edge("decide_images", "generate_and_place_images")
+g.add_edge("generate_and_place_images", "finalize_result")
+g.add_edge("finalize_result", END)
 
 
-# Step D: Resilient Checkpointer Setup
+# Resilient Checkpointer Setup
 # For FastAPI streaming servers, an in-memory checkpointer is rock-solid and eliminates
 # SSL connection timeouts, dead pool sockets, and external database latency during runs.
 # Deliverables (writeup.md and images) are persisted to disk automatically upon completion.
