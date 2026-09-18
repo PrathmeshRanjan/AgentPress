@@ -289,6 +289,10 @@ class State(TypedDict):
     telemetry: NotRequired[dict]
     result: NotRequired[dict]
     enable_images: NotRequired[bool]
+    force_closed_book: NotRequired[bool]
+    benchmark_section_count: NotRequired[int]
+    benchmark_target_words: NotRequired[int]
+    max_revisions: NotRequired[int]
 
 
 # ============================================================================
@@ -337,6 +341,17 @@ If needs_research=true:
 def router_node(state: State) -> dict:
     """Evaluates whether the blog topic requires web research and generates search queries."""
     started_at = perf_counter()
+    if state.get("force_closed_book", False):
+        return {
+            "needs_research": False,
+            "mode": "closed_book",
+            "queries": [],
+            "revision_count": state.get("revision_count", 0),
+            "pipeline_started_at": state.get("pipeline_started_at", perf_counter()),
+            "telemetry_events": [
+                make_event(agent="router", started_at=started_at, status="policy_override")
+            ],
+        }
     topic = state["topic"]
     invocation = invoke_structured_model(
         agent="router",
@@ -519,6 +534,15 @@ def orchestrator_node(state: State) -> dict:
 
     evidence = state.get("evidence", [])
     mode = state.get("mode", "closed_book")
+    benchmark_constraints = ""
+    if state.get("benchmark_section_count"):
+        section_count = max(2, int(state["benchmark_section_count"]))
+        target_words = max(150, int(state.get("benchmark_target_words", 300)))
+        benchmark_constraints = (
+            f"\nBenchmark constraint: Produce exactly {section_count} tasks. "
+            f"Set each task target_words to approximately {target_words}. "
+            "Keep the outline compact while retaining a clear beginning-to-end argument.\n"
+        )
 
     invocation = invoke_structured_model(
         agent="orchestrator",
@@ -531,6 +555,7 @@ def orchestrator_node(state: State) -> dict:
                 content=(
                     f"Topic: {state['topic']}\n"
                     f"Research Mode: {mode}\n\n"
+                    f"{benchmark_constraints}"
                     f"Available Evidence (use where relevant; may be empty):\n"
                     f"{[e.model_dump() for e in evidence][:16]}"
                 )
@@ -727,7 +752,8 @@ def editor_node(state: State) -> dict:
             HumanMessage(
                 content=(
                     f"Topic: {state['topic']}\n"
-                    f"Revision number: {state.get('revision_count', 0)} of {MAX_REVISIONS}\n\n"
+                    f"Revision number: {state.get('revision_count', 0)} of "
+                    f"{state.get('max_revisions', MAX_REVISIONS)}\n\n"
                     f"Draft:\n{state['merged_md']}"
                 )
             ),
@@ -761,7 +787,7 @@ def editor_node(state: State) -> dict:
 def route_after_editor(state: State) -> Literal["fact_checker", "revision_writer", "unresolved"]:
     if state.get("editor_approved", False):
         return "fact_checker"
-    if state.get("revision_count", 0) >= MAX_REVISIONS:
+    if state.get("revision_count", 0) >= state.get("max_revisions", MAX_REVISIONS):
         return "unresolved"
     return "revision_writer"
 
@@ -812,7 +838,7 @@ def fact_checker_node(state: State) -> dict:
 def route_after_fact_checker(state: State) -> Literal["approved", "revision_writer", "unresolved"]:
     if state.get("fact_checker_approved", False):
         return "approved"
-    if state.get("revision_count", 0) >= MAX_REVISIONS:
+    if state.get("revision_count", 0) >= state.get("max_revisions", MAX_REVISIONS):
         return "unresolved"
     return "revision_writer"
 
@@ -831,7 +857,7 @@ def revision_writer_node(state: State) -> dict:
             HumanMessage(
                 content=(
                     f"Topic: {state['topic']}\n"
-                    f"Revision: {next_revision} of {MAX_REVISIONS}\n"
+                    f"Revision: {next_revision} of {state.get('max_revisions', MAX_REVISIONS)}\n"
                     f"Review history:\n{feedback}\n\n"
                     f"Current draft:\n{state['merged_md']}"
                 )
@@ -1109,7 +1135,7 @@ def finalize_result_node(state: State) -> dict:
         "unresolved_errors": state.get("unresolved_errors", False),
         "unresolved_error_details": state.get("unresolved_error_details", []),
         "revision_count": state.get("revision_count", 0),
-        "max_revisions": MAX_REVISIONS,
+        "max_revisions": state.get("max_revisions", MAX_REVISIONS),
     }
     result = {
         "content": state["final"],

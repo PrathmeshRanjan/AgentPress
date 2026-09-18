@@ -41,11 +41,15 @@ def _percent_change(new: float, old: float) -> float:
     return 0.0 if old == 0 else (new / old - 1) * 100
 
 
-def generate_report(records: list[dict[str, Any]]) -> str:
+def generate_report(records: list[dict[str, Any]], expected_topics: int = 5) -> str:
     baseline = _aggregate(records, "baseline")
     pipeline = _aggregate(records, "pipeline")
     token_overhead = _percent_change(pipeline["average_tokens"], baseline["average_tokens"])
     latency_overhead = _percent_change(pipeline["average_latency_ms"], baseline["average_latency_ms"])
+    cost_overhead = _percent_change(pipeline["average_cost_usd"], baseline["average_cost_usd"])
+    baseline_words = mean(float(record["baseline"]["text_metrics"]["word_count"]) for record in records)
+    pipeline_words = mean(float(record["pipeline"]["text_metrics"]["word_count"]) for record in records)
+    benchmark_config = records[0].get("benchmark_config", {})
     unresolved = sum(
         bool(record["pipeline"]["metadata"].get("unresolved_errors", False))
         for record in records
@@ -73,11 +77,19 @@ def generate_report(records: list[dict[str, Any]]) -> str:
         *(
             [
                 "",
-                f"> Benchmark status: partial ({len(records)}/5 default seed topics). Provider daily quotas prevented completion of the remaining paired runs; use `python benchmark.py --resume` after quota reset.",
+                f"> Benchmark status: partial ({len(records)}/{expected_topics} planned seed topics). Provider daily quotas prevented completion of the remaining paired runs; rerun the same benchmark command with `--resume` and the same `--output` after quota reset.",
             ]
-            if len(records) < 5
+            if len(records) < expected_topics
             else []
         ),
+        "",
+        "## Methodology",
+        "",
+        f"- Topics: {len(records)} paired prompts, with both systems using the same model fallback chain.",
+        f"- Output target: {benchmark_config.get('sections', 2)} pipeline sections at approximately {benchmark_config.get('section_target_words', 300)} words each; the baseline received a matched total-word target.",
+        f"- Maximum benchmark revisions: {benchmark_config.get('max_revisions', 1)}. The production circuit breaker remains capped at three revisions.",
+        "- Web research and image generation were disabled for both systems to isolate text orchestration cost.",
+        "- Quality review uses blinded A/B outputs and a 25-point human rubric covering accuracy, coherence, depth, clarity, and usefulness.",
         "",
         "## Aggregate Results",
         "",
@@ -98,6 +110,8 @@ def generate_report(records: list[dict[str, Any]]) -> str:
         "",
         f"- Multi-agent token overhead: {token_overhead:+.1f}%.",
         f"- Multi-agent latency overhead: {latency_overhead:+.1f}%.",
+        f"- Multi-agent estimated-cost overhead: {cost_overhead:+.1f}%.",
+        f"- Average output length: {baseline_words:,.0f} baseline words versus {pipeline_words:,.0f} multi-agent words.",
         f"- Circuit-breaker outcomes: {unresolved}/{len(records)} runs completed with unresolved errors flagged.",
         "- Quality is intentionally left to the paired human-review output; factual-marker density is a descriptive proxy, not a quality score.",
         "",
@@ -127,6 +141,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("benchmark_results.jsonl"))
     parser.add_argument("--output", type=Path, default=Path("BENCHMARK_REPORT.md"))
+    parser.add_argument("--expected-topics", type=int, default=5)
     parser.add_argument(
         "--clean-output",
         type=Path,
@@ -134,7 +149,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     records = _load_records(args.input)
-    report = generate_report(records)
+    report = generate_report(records, expected_topics=max(args.expected_topics, 1))
     args.output.write_text(report, encoding="utf-8")
     if args.clean_output:
         args.clean_output.write_text(

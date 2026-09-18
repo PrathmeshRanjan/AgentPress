@@ -256,14 +256,33 @@ Editor or Fact-Checker rejection routes the draft back to the revision Writer wi
 
 ## Observability and Benchmarking
 
-Run the reproducible five-topic benchmark (image generation is disabled for an apples-to-apples text comparison):
+Run the reproducible benchmark (image generation and research are disabled for an apples-to-apples text comparison):
 
 ```bash
 python benchmark.py
 python generate_report.py
 ```
 
-If a provider quota interrupts a suite, rerun `python benchmark.py --resume`; completed topics are retained and only unfinished seeds run again.
+If a provider quota interrupts a suite, rerun the same command with `--resume`; completed topics are retained and only unfinished seeds run again.
+
+For a token-efficient quality pass, use the compact profile:
+
+```bash
+python benchmark.py --limit 3 --sections 2 --section-words 300 --max-revisions 1
+```
+
+This compares matched ~600-word outputs, disables research and images, and retains independent planning, section writing, editorial review, and fact-checking calls.
+
+### Completed Compact Benchmark
+
+The checked-in benchmark contains three completed paired topics:
+
+| System | Average Latency | Total Tokens | Total Estimated Cost | Average Revisions |
+|---|---:|---:|---:|---:|
+| Vanilla Baseline | 13,417 ms | 6,205 | $0.0148 | 0.00 |
+| Multi-Agent Pipeline | 56,791 ms | 47,602 | $0.0778 | 0.67 |
+
+The multi-agent system used 667.2% more tokens, took 323.3% longer, and cost 426.3% more than the one-shot baseline. Two of three topics triggered a Writer revision, all three passed the final gates, and none reached the unresolved-error circuit breaker. These figures measure orchestration overhead—not an automatic quality gain. Use the blinded review rubric in `BENCHMARK_OUTPUTS.md` before making quality claims.
 
 The benchmark produces:
 
@@ -280,7 +299,7 @@ Token prices are centralized in `telemetry.py`. The checked-in defaults use stan
 | Layer | Technologies |
 | :--- | :--- |
 | **Backend Framework** | Python 3.12, FastAPI, Uvicorn |
-| **Agent Orchestration** | LangGraph (StateGraph, Nested Subgraphs, Send Fan-Out), LangChain Core |
+| **Agent Orchestration** | LangGraph (StateGraph, bounded feedback cycles, Send Fan-Out), LangChain Core |
 | **Language Models** | Mistral Small (`mistralai:mistral-small-latest`), Google Gemini 2.5 Flash (`google_genai:gemini-2.5-flash`) |
 | **Multimodal Generation** | Google Gemini 2.5 Flash Image (`gemini-2.5-flash-image`) |
 | **Search Engine** | Tavily Search API |

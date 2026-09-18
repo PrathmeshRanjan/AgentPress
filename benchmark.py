@@ -28,7 +28,7 @@ DEFAULT_TOPICS = [
 
 BASELINE_SYSTEM = """You are an expert researcher, writer, editor, and fact-checker working alone.
 Create a publication-ready long-form Markdown article in one response. Use a compelling H1 title,
-clear H2 sections, concrete examples, nuanced trade-offs, and a concise ending. Write 1,500-2,000
+clear H2 sections, concrete examples, nuanced trade-offs, and a concise ending. Write {min_words}-{max_words}
 words in a natural expert voice. Do not invent sources, links, studies, statistics, or quotations.
 Output only the finished article."""
 
@@ -50,7 +50,13 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(marker in message for marker in ("429", "rate limit", "timeout", "temporarily unavailable"))
 
 
-def run_baseline(topic: str, *, retries: int, retry_delay: float) -> dict[str, Any]:
+def run_baseline(
+    topic: str,
+    *,
+    retries: int,
+    retry_delay: float,
+    target_words: int,
+) -> dict[str, Any]:
     started_at = perf_counter()
     for attempt in range(retries + 1):
         try:
@@ -59,7 +65,12 @@ def run_baseline(topic: str, *, retries: int, retry_delay: float) -> dict[str, A
                 runnable=model,
                 configured_model=PRIMARY_MODEL_NAME,
                 messages=[
-                    SystemMessage(content=BASELINE_SYSTEM),
+                    SystemMessage(
+                        content=BASELINE_SYSTEM.format(
+                            min_words=max(400, target_words - 100),
+                            max_words=target_words + 100,
+                        )
+                    ),
                     HumanMessage(content=f"Topic: {topic}"),
                 ],
             )
@@ -90,6 +101,9 @@ def run_multi_agent(
     retries: int,
     retry_delay: float,
     max_concurrency: int,
+    section_count: int,
+    section_target_words: int,
+    max_revisions: int,
 ) -> dict[str, Any]:
     run_id = f"benchmark-{uuid.uuid4().hex}"
     initial_input: dict[str, Any] | None = {
@@ -102,6 +116,10 @@ def run_multi_agent(
         # Image generation is excluded so this benchmark isolates the text
         # orchestration overhead and remains directly comparable.
         "enable_images": False,
+        "force_closed_book": True,
+        "benchmark_section_count": section_count,
+        "benchmark_target_words": section_target_words,
+        "max_revisions": max_revisions,
     }
     config = {
         "configurable": {"thread_id": run_id},
@@ -150,22 +168,49 @@ def write_human_review(records: list[dict[str, Any]], path: Path) -> None:
     lines = [
         "# Baseline vs. Multi-Agent Output Review",
         "",
-        "The complete outputs are shown side-by-side for blind human quality review.",
-        "Images are disabled in both paths; the baseline receives no web research or revision loop.",
+        "The complete outputs are shown as blinded System A/System B pairs.",
+        "Score each criterion from 1 (poor) to 5 (excellent) before opening the answer key.",
+        "Images and research are disabled in both paths; the baseline receives no revision loop.",
         "",
     ]
+    answer_key: list[str] = []
     for index, record in enumerate(records, start=1):
         baseline = html.escape(record["baseline"]["content"])
         pipeline = html.escape(record["pipeline"]["content"])
+        if index % 2:
+            system_a, system_b = pipeline, baseline
+            answer_key.append(f"{index}. A = Multi-agent; B = Baseline")
+        else:
+            system_a, system_b = baseline, pipeline
+            answer_key.append(f"{index}. A = Baseline; B = Multi-agent")
         lines.extend(
             [
                 f"## {index}. {record['topic']}",
                 "",
-                "<table><thead><tr><th width=\"50%\">Vanilla baseline</th><th width=\"50%\">Multi-agent pipeline</th></tr></thead>",
-                f"<tbody><tr><td valign=\"top\"><pre>{baseline}</pre></td><td valign=\"top\"><pre>{pipeline}</pre></td></tr></tbody></table>",
+                "<table><thead><tr><th width=\"50%\">System A</th><th width=\"50%\">System B</th></tr></thead>",
+                f"<tbody><tr><td valign=\"top\"><pre>{system_a}</pre></td><td valign=\"top\"><pre>{system_b}</pre></td></tr></tbody></table>",
+                "",
+                "| Criterion | System A (1–5) | System B (1–5) | Notes |",
+                "|---|---:|---:|---|",
+                "| Factual accuracy and appropriate uncertainty |  |  |  |",
+                "| Logical coherence and structure |  |  |  |",
+                "| Depth and specificity |  |  |  |",
+                "| Clarity and prose quality |  |  |  |",
+                "| Practical usefulness |  |  |  |",
+                "| **Total / 25** |  |  |  |",
                 "",
             ]
         )
+    lines.extend(
+        [
+            "<details><summary>Answer key — open only after scoring</summary>",
+            "",
+            *answer_key,
+            "",
+            "</details>",
+            "",
+        ]
+    )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -179,6 +224,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--retry-delay", type=float, default=30.0)
     parser.add_argument("--cooldown-seconds", type=float, default=20.0)
+    parser.add_argument("--sections", type=int, default=2)
+    parser.add_argument("--section-words", type=int, default=300)
+    parser.add_argument("--max-revisions", type=int, default=1)
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -219,12 +267,16 @@ def main() -> int:
                     topic,
                     retries=max(args.retries, 0),
                     retry_delay=max(args.retry_delay, 0),
+                    target_words=max(args.sections, 2) * max(args.section_words, 150),
                 )
                 pipeline = run_multi_agent(
                     topic,
                     retries=max(args.retries, 0),
                     retry_delay=max(args.retry_delay, 0),
                     max_concurrency=max(args.max_concurrency, 1),
+                    section_count=max(args.sections, 2),
+                    section_target_words=max(args.section_words, 150),
+                    max_revisions=max(args.max_revisions, 0),
                 )
                 record = {
                     "topic": topic,
@@ -232,6 +284,13 @@ def main() -> int:
                     "baseline": baseline,
                     "pipeline": pipeline,
                     "comparison": _comparison(baseline, pipeline),
+                    "benchmark_config": {
+                        "sections": max(args.sections, 2),
+                        "section_target_words": max(args.section_words, 150),
+                        "max_revisions": max(args.max_revisions, 0),
+                        "research_enabled": False,
+                        "images_enabled": False,
+                    },
                     "benchmark_wall_time_ms": round((perf_counter() - started_at) * 1000, 2),
                 }
             except Exception as exc:
