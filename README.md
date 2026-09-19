@@ -1,8 +1,36 @@
 # AgentPress
 
-A multi-agent long-form writing platform that researches, outlines, parallel-drafts, and illustrates essays, analytical articles, and comprehensive writeups across any domain using LangGraph, FastAPI, and Docker.
+A multi-agent long-form writing platform that researches, outlines, parallel-drafts, reviews, fact-checks, and illustrates long-form content using LangGraph, FastAPI, and Docker. The project includes a completed, telemetry-backed benchmark against a one-shot LLM baseline—not just an architecture demo.
 
-[Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Review Loop Deep Dive](#review-loop-deep-dive) • [Data Contracts & Validation](#data-contracts-and-validation) • [Resilience & Fallback](#resilience-and-fault-tolerance) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started-locally)
+[Benchmark Results](#benchmark-results-primary-evidence) • [Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Review Loop Deep Dive](#review-loop-deep-dive) • [Observability](#observability-and-benchmarking) • [Getting Started](#getting-started-locally)
+
+---
+
+## Benchmark Results: Primary Evidence
+
+AgentPress was benchmarked against a single, well-prompted LLM baseline across **three completed paired topics**. Both approaches used the same model fallback chain and matched output targets; web research and image generation were disabled to isolate the cost of multi-agent orchestration.
+
+| System | Average Latency | Total Tokens | Total Estimated Cost | Average Revision Loops |
+|---|---:|---:|---:|---:|
+| Vanilla Baseline | **13,417 ms** | **6,205** | **$0.0148** | 0.00 |
+| Multi-Agent Pipeline | 56,791 ms | 47,602 | $0.0778 | **0.67** |
+
+### What the measurements show
+
+- The multi-agent pipeline used **667.2% more tokens**, took **323.3% longer**, and cost **426.3% more** than the one-shot baseline.
+- Two of three topics triggered a real Writer revision after review; all three passed the final Editor and Fact-Checker gates.
+- No run reached the unresolved-error circuit breaker.
+- The benchmark makes the orchestration trade-off explicit: higher cost and latency buy structured planning, parallel drafting, critique memory, revision, and independent factual review. It does **not** claim an automatic quality improvement without human scoring.
+
+### Stored benchmark evidence and reports
+
+All generated benchmark artifacts are checked into the repository for inspection and comparison:
+
+- **[Aggregate benchmark report](BENCHMARK_REPORT.md):** methodology, aggregate/per-topic metrics, overhead calculations, revision counts, and resume-ready bullets.
+- **[Blinded A/B comparison report](BENCHMARK_OUTPUTS.md):** complete outputs shown as System A/System B with a 25-point human rubric for accuracy, coherence, depth, clarity, and usefulness.
+- **[Raw benchmark telemetry](benchmark_results.jsonl):** machine-readable prompts, outputs, per-agent invocation metrics, token counts, latency, model identity, estimated cost, and final metadata for every completed pair.
+
+The benchmark profile targets two ~300-word pipeline sections, a matched baseline length, and at most one benchmark revision to conserve API quota. The production workflow still enforces its full three-revision circuit breaker.
 
 ---
 
@@ -273,16 +301,7 @@ python benchmark.py --limit 3 --sections 2 --section-words 300 --max-revisions 1
 
 This compares matched ~600-word outputs, disables research and images, and retains independent planning, section writing, editorial review, and fact-checking calls.
 
-### Completed Compact Benchmark
-
-The checked-in benchmark contains three completed paired topics:
-
-| System | Average Latency | Total Tokens | Total Estimated Cost | Average Revisions |
-|---|---:|---:|---:|---:|
-| Vanilla Baseline | 13,417 ms | 6,205 | $0.0148 | 0.00 |
-| Multi-Agent Pipeline | 56,791 ms | 47,602 | $0.0778 | 0.67 |
-
-The multi-agent system used 667.2% more tokens, took 323.3% longer, and cost 426.3% more than the one-shot baseline. Two of three topics triggered a Writer revision, all three passed the final gates, and none reached the unresolved-error circuit breaker. These figures measure orchestration overhead—not an automatic quality gain. Use the blinded review rubric in `BENCHMARK_OUTPUTS.md` before making quality claims.
+The completed three-topic results are highlighted at the top of this README. Use the generated aggregate report and blinded A/B report to inspect the measurements and compare content quality directly.
 
 The benchmark produces:
 
