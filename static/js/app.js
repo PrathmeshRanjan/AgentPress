@@ -57,6 +57,44 @@ const articlePreview = document.getElementById("articlePreview");
 const markdownOutput = document.getElementById("markdownOutput");
 const previewTab = document.getElementById("previewTab");
 const markdownTab = document.getElementById("markdownTab");
+const telemetryTab = document.getElementById("telemetryTab");
+const telemetryOutput = document.getElementById("telemetryOutput");
+const telemetryEmpty = document.getElementById("telemetryEmpty");
+const telemetryDetails = document.getElementById("telemetryDetails");
+const liveTelLatency = document.getElementById("liveTelLatency");
+const liveTelTokens = document.getElementById("liveTelTokens");
+const liveTelCost = document.getElementById("liveTelCost");
+const liveTelRevisions = document.getElementById("liveTelRevisions");
+const liveTelTableBody = document.getElementById("liveTelTableBody");
+
+// Navigation views
+const navStudioBtn = document.getElementById("navStudioBtn");
+const navBenchmarksBtn = document.getElementById("navBenchmarksBtn");
+const studioView = document.getElementById("studioView");
+const benchmarkView = document.getElementById("benchmarkView");
+
+// Benchmark dashboard elements
+const refreshBenchmarkBtn = document.getElementById("refreshBenchmarkBtn");
+const kpiTokenVal = document.getElementById("kpiTokenVal");
+const kpiLatencyVal = document.getElementById("kpiLatencyVal");
+const kpiCostVal = document.getElementById("kpiCostVal");
+const kpiWordsVal = document.getElementById("kpiWordsVal");
+const topicCountBadge = document.getElementById("topicCountBadge");
+const benchmarkTopicsTableBody = document.getElementById("benchmarkTopicsTableBody");
+
+const abSelectedTopicTitle = document.getElementById("abSelectedTopicTitle");
+const abTopicSelect = document.getElementById("abTopicSelect");
+const revealIdentityBtn = document.getElementById("revealIdentityBtn");
+const identityA = document.getElementById("identityA");
+const identityB = document.getElementById("identityB");
+const abMetaA = document.getElementById("abMetaA");
+const abMetaB = document.getElementById("abMetaB");
+const abContentA = document.getElementById("abContentA");
+const abContentB = document.getElementById("abContentB");
+
+const waterfallSubtitle = document.getElementById("waterfallSubtitle");
+const waterfallTotalCost = document.getElementById("waterfallTotalCost");
+const waterfallTableBody = document.getElementById("waterfallTableBody");
 
 const copyButton = document.getElementById("copyButton");
 const copyButtonText = document.getElementById("copyButtonText");
@@ -217,6 +255,11 @@ function resetInterface() {
     // Reset Tabs and Action Buttons
     previewTab.classList.add("active");
     markdownTab.classList.remove("active");
+    if (telemetryTab) telemetryTab.classList.remove("active");
+    if (telemetryOutput) telemetryOutput.hidden = true;
+    if (telemetryEmpty) telemetryEmpty.hidden = false;
+    if (telemetryDetails) telemetryDetails.hidden = true;
+    if (liveTelTableBody) liveTelTableBody.innerHTML = "";
 
     readingStats.hidden = true;
     copyButton.disabled = true;
@@ -589,6 +632,9 @@ function displayFinalResult(event, shouldRefreshHistory = true) {
     }
     updateProgress(100);
 
+    // Render telemetry panel if available
+    renderTelemetryPanel(event.telemetry);
+
     // Refresh history list so the new writeup appears in sidebar
     if (shouldRefreshHistory) {
         loadHistory();
@@ -854,6 +900,7 @@ executionStopButton?.addEventListener("click", handleStopExecution);
 
 // New Article button handler
 newRunButton.addEventListener("click", () => {
+    switchMainView("studio");
     if (abortController) {
         abortController.abort();
     }
@@ -868,6 +915,7 @@ newRunButton.addEventListener("click", () => {
 // Quick example buttons
 document.querySelectorAll("[data-topic]").forEach((button) => {
     button.addEventListener("click", () => {
+        switchMainView("studio");
         topicInput.value = button.dataset.topic || "";
         charCounter.textContent = `${topicInput.value.length} / 1000`;
         topicInput.focus();
@@ -875,19 +923,23 @@ document.querySelectorAll("[data-topic]").forEach((button) => {
 });
 
 // Result tab switching
-previewTab.addEventListener("click", () => {
-    previewTab.classList.add("active");
-    markdownTab.classList.remove("active");
-    articlePreview.hidden = false;
-    markdownOutput.hidden = true;
-});
+function switchDeliverableTab(tabName) {
+    const isPreview = tabName === "preview";
+    const isMarkdown = tabName === "markdown";
+    const isTelemetry = tabName === "telemetry";
 
-markdownTab.addEventListener("click", () => {
-    markdownTab.classList.add("active");
-    previewTab.classList.remove("active");
-    markdownOutput.hidden = false;
-    articlePreview.hidden = true;
-});
+    if (previewTab) previewTab.classList.toggle("active", isPreview);
+    if (markdownTab) markdownTab.classList.toggle("active", isMarkdown);
+    if (telemetryTab) telemetryTab.classList.toggle("active", isTelemetry);
+
+    if (articlePreview) articlePreview.hidden = !isPreview;
+    if (markdownOutput) markdownOutput.hidden = !isMarkdown;
+    if (telemetryOutput) telemetryOutput.hidden = !isTelemetry;
+}
+
+previewTab?.addEventListener("click", () => switchDeliverableTab("preview"));
+markdownTab?.addEventListener("click", () => switchDeliverableTab("markdown"));
+telemetryTab?.addEventListener("click", () => switchDeliverableTab("telemetry"));
 
 // Copy button with visual feedback
 copyButton.addEventListener("click", async () => {
@@ -1057,6 +1109,9 @@ async function openPreviousWriteup(runId) {
 
         const data = await res.json();
 
+        // Ensure user is in Studio view when opening an article
+        switchMainView("studio");
+
         // Switch to Preview tab
         if (previewTab) {
             previewTab.click();
@@ -1067,6 +1122,8 @@ async function openPreviousWriteup(runId) {
             {
                 markdown: data.markdown,
                 download_url: data.download_url,
+                telemetry: data.telemetry,
+                metadata: data.pipeline_metadata,
             },
             false,
         );
@@ -1105,6 +1162,442 @@ async function deletePreviousWriteup(runId) {
 refreshHistoryButton?.addEventListener("click", () => {
     loadHistory();
     showToast("Refreshed writeup library.");
+});
+
+// ============================================================================
+// 14. Benchmarking Dashboard & Observability Controller
+// ============================================================================
+
+let benchmarkSummary = null;
+let benchmarkTopics = [];
+let selectedTopicIndex = 0;
+let identitiesRevealed = false;
+
+/**
+ * Switches between Studio and Benchmarks view panels.
+ */
+function switchMainView(viewName) {
+    const isStudio = viewName === "studio";
+    const isBenchmarks = viewName === "benchmarks";
+
+    if (navStudioBtn) navStudioBtn.classList.toggle("active", isStudio);
+    if (navBenchmarksBtn) navBenchmarksBtn.classList.toggle("active", isBenchmarks);
+
+    if (studioView) studioView.hidden = !isStudio;
+    if (benchmarkView) benchmarkView.hidden = !isBenchmarks;
+
+    if (isBenchmarks) {
+        loadBenchmarkDashboard();
+    }
+}
+
+navStudioBtn?.addEventListener("click", () => switchMainView("studio"));
+navBenchmarksBtn?.addEventListener("click", () => switchMainView("benchmarks"));
+
+/**
+ * Formatting helpers for telemetry and benchmarks
+ */
+function formatNodeName(name) {
+    if (!name) return "Unknown";
+    const map = {
+        router: "01 Router",
+        research: "02 Web Research",
+        orchestrator: "03 Outline Strategy",
+        worker: "04 Worker Section",
+        editor: "05 Editor Critique",
+        fact_checker: "06 Fact-Checker Critique",
+        revision_writer: "07 Revision Writer",
+        reducer: "08 Reducer Final",
+        vanilla_baseline: "Vanilla Baseline",
+    };
+    return map[name] || name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, " ");
+}
+
+function formatLatency(ms) {
+    if (typeof ms !== "number" || isNaN(ms)) return "-";
+    if (ms >= 1000) {
+        return `${(ms / 1000).toFixed(1)}s`;
+    }
+    return `${Math.round(ms)}ms`;
+}
+
+function formatCost(cost) {
+    if (typeof cost !== "number" || isNaN(cost)) return "$0.0000";
+    return `$${cost.toFixed(4)}`;
+}
+
+/**
+ * Renders live or historical telemetry into the Studio deliverable panel.
+ */
+function renderTelemetryPanel(telemetry) {
+    if (!telemetry || !telemetry.total_tokens) {
+        if (telemetryEmpty) telemetryEmpty.hidden = false;
+        if (telemetryDetails) telemetryDetails.hidden = true;
+        return;
+    }
+
+    if (telemetryEmpty) telemetryEmpty.hidden = true;
+    if (telemetryDetails) telemetryDetails.hidden = false;
+
+    if (liveTelLatency) liveTelLatency.textContent = formatLatency(telemetry.latency_ms);
+    if (liveTelTokens) liveTelTokens.textContent = (telemetry.total_tokens || 0).toLocaleString();
+    if (liveTelCost) liveTelCost.textContent = formatCost(telemetry.estimated_cost_usd);
+    if (liveTelRevisions) {
+        const revCount = telemetry.revision_loop_count || 0;
+        liveTelRevisions.textContent = `${revCount} loop${revCount === 1 ? "" : "s"}`;
+    }
+
+    if (liveTelTableBody) {
+        liveTelTableBody.innerHTML = "";
+        const invocations = telemetry.invocations || [];
+        if (invocations.length === 0) {
+            liveTelTableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:18px;">No granular invocation records.</td></tr>`;
+        } else {
+            invocations.forEach((inv) => {
+                const tr = document.createElement("tr");
+                const statusBadge = inv.status === "error"
+                    ? `<span class="table-badge warning">Error</span>`
+                    : `<span class="table-badge success">Success</span>`;
+
+                tr.innerHTML = `
+                    <td><strong>${escapeHtml(formatNodeName(inv.node_name))}</strong></td>
+                    <td><code>${escapeHtml(inv.model || "-")}</code></td>
+                    <td>${formatLatency(inv.latency_ms)}</td>
+                    <td>${(inv.prompt_tokens || 0).toLocaleString()} / ${(inv.completion_tokens || 0).toLocaleString()}</td>
+                    <td><strong>${(inv.total_tokens || 0).toLocaleString()}</strong></td>
+                    <td>${formatCost(inv.estimated_cost_usd)}</td>
+                    <td>${statusBadge}</td>
+                `;
+                liveTelTableBody.appendChild(tr);
+            });
+        }
+    }
+}
+
+/**
+ * Loads and renders the benchmarking dashboard data from API.
+ */
+async function loadBenchmarkDashboard(force = false) {
+    if (benchmarkSummary && benchmarkTopics.length > 0 && !force) {
+        return;
+    }
+
+    try {
+        const [sumRes, topRes] = await Promise.all([
+            fetch("/api/benchmark/summary"),
+            fetch("/api/benchmark/topics")
+        ]);
+
+        if (!sumRes.ok || !topRes.ok) {
+            showToast("Failed to load benchmark data.");
+            return;
+        }
+
+        benchmarkSummary = await sumRes.json();
+        benchmarkTopics = await topRes.json();
+
+        if (!benchmarkSummary.available) {
+            showToast(benchmarkSummary.message || "No benchmark records found.");
+            return;
+        }
+
+        renderBenchmarkSummary(benchmarkSummary);
+        renderBenchmarkTopicsTable(benchmarkSummary.topics || []);
+        setupBenchmarkTopicSelector(benchmarkTopics);
+        renderABComparison(selectedTopicIndex);
+        renderWaterfall(selectedTopicIndex);
+
+    } catch (err) {
+        console.error("Error loading benchmark dashboard:", err);
+        showToast("Error loading benchmark dashboard.");
+    }
+}
+
+/**
+ * Updates KPI cards and comparison progress bars with empirical metrics.
+ */
+function renderBenchmarkSummary(data) {
+    const agg = data.aggregate;
+    if (!agg) return;
+
+    if (kpiTokenVal) {
+        kpiTokenVal.innerHTML = `${Math.round(agg.pipeline.average_tokens).toLocaleString()} <small>vs ${Math.round(agg.baseline.average_tokens).toLocaleString()}</small>`;
+    }
+    if (kpiLatencyVal) {
+        kpiLatencyVal.innerHTML = `${(agg.pipeline.average_latency_ms / 1000).toFixed(1)}s <small>vs ${(agg.baseline.average_latency_ms / 1000).toFixed(1)}s</small>`;
+    }
+    if (kpiCostVal) {
+        kpiCostVal.innerHTML = `${formatCost(agg.pipeline.average_cost_usd)} <small>vs ${formatCost(agg.baseline.average_cost_usd)}</small>`;
+    }
+    if (kpiWordsVal) {
+        kpiWordsVal.innerHTML = `${Math.round(agg.pipeline.average_words).toLocaleString()} <small>vs ${Math.round(agg.baseline.average_words).toLocaleString()} words</small>`;
+    }
+
+    if (topicCountBadge) {
+        topicCountBadge.textContent = `${data.total_runs} Topics Evaluated`;
+    }
+
+    // Dynamic Comparison Bars
+    const totalTokB = agg.baseline.total_tokens || 1;
+    const totalTokP = agg.pipeline.total_tokens || 1;
+    const sumTok = totalTokB + totalTokP;
+    const pctTokB = Math.max(8, Math.round((totalTokB / sumTok) * 100));
+    const pctTokP = 100 - pctTokB;
+
+    const latB = agg.baseline.average_latency_ms || 1;
+    const latP = agg.pipeline.average_latency_ms || 1;
+    const sumLat = latB + latP;
+    const pctLatB = Math.max(8, Math.round((latB / sumLat) * 100));
+    const pctLatP = 100 - pctLatB;
+
+    const costB = agg.baseline.total_cost_usd || 0.001;
+    const costP = agg.pipeline.total_cost_usd || 0.001;
+    const sumCost = costB + costP;
+    const pctCostB = Math.max(8, Math.round((costB / sumCost) * 100));
+    const pctCostP = 100 - pctCostB;
+
+    const barRows = document.querySelectorAll(".comparison-bar-row");
+    if (barRows.length >= 3) {
+        // Row 1: Tokens
+        const fills1 = barRows[0].querySelectorAll(".progress-bar-fill");
+        if (fills1.length === 2) {
+            fills1[0].style.width = `${pctTokB}%`;
+            fills1[1].style.width = `${pctTokP}%`;
+        }
+        const nums1 = barRows[0].querySelector(".bar-nums");
+        if (nums1) {
+            nums1.innerHTML = `<strong>Baseline: ${totalTokB.toLocaleString()}</strong> | <strong>Pipeline: ${totalTokP.toLocaleString()}</strong> (${agg.overhead.token_overhead_percent > 0 ? "+" : ""}${agg.overhead.token_overhead_percent}%)`;
+        }
+
+        // Row 2: Latency
+        const fills2 = barRows[1].querySelectorAll(".progress-bar-fill");
+        if (fills2.length === 2) {
+            fills2[0].style.width = `${pctLatB}%`;
+            fills2[1].style.width = `${pctLatP}%`;
+        }
+        const nums2 = barRows[1].querySelector(".bar-nums");
+        if (nums2) {
+            nums2.innerHTML = `<strong>Baseline: ${(latB / 1000).toFixed(1)}s</strong> | <strong>Pipeline: ${(latP / 1000).toFixed(1)}s</strong> (${agg.overhead.latency_overhead_percent > 0 ? "+" : ""}${agg.overhead.latency_overhead_percent}%)`;
+        }
+
+        // Row 3: Cost
+        const fills3 = barRows[2].querySelectorAll(".progress-bar-fill");
+        if (fills3.length === 2) {
+            fills3[0].style.width = `${pctCostB}%`;
+            fills3[1].style.width = `${pctCostP}%`;
+        }
+        const nums3 = barRows[2].querySelector(".bar-nums");
+        if (nums3) {
+            nums3.innerHTML = `<strong>Baseline: ${formatCost(costB)}</strong> | <strong>Pipeline: ${formatCost(costP)}</strong> (${agg.overhead.cost_overhead_percent > 0 ? "+" : ""}${agg.overhead.cost_overhead_percent}%)`;
+        }
+    }
+}
+
+/**
+ * Renders the Seed Topics Performance Table.
+ */
+function renderBenchmarkTopicsTable(topics) {
+    if (!benchmarkTopicsTableBody) return;
+    benchmarkTopicsTableBody.innerHTML = "";
+
+    topics.forEach((t, idx) => {
+        const tr = document.createElement("tr");
+        tr.className = "clickable-row";
+        if (idx === selectedTopicIndex) {
+            tr.classList.add("selected-row");
+        }
+
+        const overheadSign = t.token_overhead_percent > 0 ? "+" : "";
+        const overheadBadge = t.token_overhead_percent > 0 ? "warning" : "success";
+
+        tr.innerHTML = `
+            <td><code>${String(t.index).padStart(2, "0")}</code></td>
+            <td style="font-weight: 600; max-width: 280px;">${escapeHtml(t.topic)}</td>
+            <td>${(t.baseline_tokens || 0).toLocaleString()}</td>
+            <td><strong>${(t.pipeline_tokens || 0).toLocaleString()}</strong></td>
+            <td><span class="table-badge ${overheadBadge}">${overheadSign}${t.token_overhead_percent}%</span></td>
+            <td>${t.revision_loops} loop${t.revision_loops === 1 ? "" : "s"}</td>
+            <td>${formatCost(t.pipeline_cost_usd)}</td>
+            <td><span class="table-badge success">${escapeHtml(t.status || "Completed")}</span></td>
+            <td><button type="button" class="table-action-btn">Inspect A/B</button></td>
+        `;
+
+        tr.addEventListener("click", () => {
+            selectTopic(idx);
+            document.getElementById("abReviewSection")?.scrollIntoView({ behavior: "smooth" });
+        });
+
+        benchmarkTopicsTableBody.appendChild(tr);
+    });
+}
+
+/**
+ * Sets up the topic dropdown selector for A/B review.
+ */
+function setupBenchmarkTopicSelector(topics) {
+    if (!abTopicSelect) return;
+    abTopicSelect.innerHTML = "";
+
+    topics.forEach((t, idx) => {
+        const opt = document.createElement("option");
+        opt.value = String(idx);
+        opt.textContent = `Topic ${t.index}: ${t.topic}`;
+        abTopicSelect.appendChild(opt);
+    });
+
+    abTopicSelect.value = String(selectedTopicIndex);
+
+    abTopicSelect.onchange = (e) => {
+        selectTopic(parseInt(e.target.value, 10));
+    };
+}
+
+/**
+ * Selects a topic for A/B comparison and waterfall inspection.
+ */
+function selectTopic(index) {
+    selectedTopicIndex = index;
+    if (abTopicSelect) {
+        abTopicSelect.value = String(index);
+    }
+
+    if (benchmarkTopicsTableBody) {
+        const rows = benchmarkTopicsTableBody.querySelectorAll("tr");
+        rows.forEach((r, idx) => {
+            r.classList.toggle("selected-row", idx === index);
+        });
+    }
+
+    renderABComparison(index);
+    renderWaterfall(index);
+}
+
+/**
+ * Renders side-by-side blinded A/B outputs for the selected topic.
+ */
+function renderABComparison(topicIndex) {
+    const topic = benchmarkTopics[topicIndex];
+    if (!topic) return;
+
+    if (abSelectedTopicTitle) {
+        abSelectedTopicTitle.textContent = topic.topic;
+    }
+
+    // System A
+    const sysA = topic.system_a;
+    if (abMetaA) {
+        const wordsA = sysA.text_metrics ? sysA.text_metrics.word_count : (sysA.telemetry?.word_count || 0);
+        const tokensA = sysA.telemetry ? sysA.telemetry.total_tokens : 0;
+        const costA = sysA.telemetry ? sysA.telemetry.estimated_cost_usd : 0;
+        abMetaA.innerHTML = `
+            <span>~${wordsA.toLocaleString()} words</span>
+            <span>${tokensA.toLocaleString()} tokens</span>
+            <span>${formatCost(costA)}</span>
+        `;
+    }
+    if (abContentA) {
+        const renderedA = marked.parse(sysA.content || "");
+        abContentA.innerHTML = DOMPurify.sanitize(renderedA);
+    }
+    if (identityA) {
+        identityA.textContent = sysA.identity;
+        identityA.className = `identity-tag ${sysA.is_pipeline ? "pipeline" : "baseline"}`;
+        identityA.hidden = !identitiesRevealed;
+    }
+
+    // System B
+    const sysB = topic.system_b;
+    if (abMetaB) {
+        const wordsB = sysB.text_metrics ? sysB.text_metrics.word_count : (sysB.telemetry?.word_count || 0);
+        const tokensB = sysB.telemetry ? sysB.telemetry.total_tokens : 0;
+        const costB = sysB.telemetry ? sysB.telemetry.estimated_cost_usd : 0;
+        abMetaB.innerHTML = `
+            <span>~${wordsB.toLocaleString()} words</span>
+            <span>${tokensB.toLocaleString()} tokens</span>
+            <span>${formatCost(costB)}</span>
+        `;
+    }
+    if (abContentB) {
+        const renderedB = marked.parse(sysB.content || "");
+        abContentB.innerHTML = DOMPurify.sanitize(renderedB);
+    }
+    if (identityB) {
+        identityB.textContent = sysB.identity;
+        identityB.className = `identity-tag ${sysB.is_pipeline ? "pipeline" : "baseline"}`;
+        identityB.hidden = !identitiesRevealed;
+    }
+}
+
+/**
+ * Renders the 12-step per-agent telemetry waterfall table.
+ */
+function renderWaterfall(topicIndex) {
+    const topic = benchmarkTopics[topicIndex];
+    if (!topic) return;
+
+    const invocations = topic.pipeline_invocations || [];
+    const totalCost = invocations.reduce((acc, i) => acc + (i.estimated_cost_usd || 0), 0);
+
+    if (waterfallSubtitle) {
+        waterfallSubtitle.textContent = `12-step pipeline execution waterfall for: "${topic.topic}"`;
+    }
+    if (waterfallTotalCost) {
+        waterfallTotalCost.textContent = `${formatCost(totalCost)} Total Pipeline Spend`;
+    }
+
+    if (!waterfallTableBody) return;
+    waterfallTableBody.innerHTML = "";
+
+    if (invocations.length === 0) {
+        waterfallTableBody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--muted); padding: 18px;">No invocation logs recorded.</td></tr>`;
+        return;
+    }
+
+    invocations.forEach((inv, idx) => {
+        const tr = document.createElement("tr");
+        const statusBadge = inv.status === "error"
+            ? `<span class="table-badge warning">Error</span>`
+            : `<span class="table-badge success">Success</span>`;
+
+        tr.innerHTML = `
+            <td><code>${String(idx + 1).padStart(2, "0")}</code></td>
+            <td><strong>${escapeHtml(formatNodeName(inv.node_name))}</strong></td>
+            <td><code>${escapeHtml(inv.model || "-")}</code></td>
+            <td>${formatLatency(inv.latency_ms)}</td>
+            <td>${(inv.prompt_tokens || 0).toLocaleString()}</td>
+            <td>${(inv.completion_tokens || 0).toLocaleString()}</td>
+            <td><strong>${(inv.total_tokens || 0).toLocaleString()}</strong></td>
+            <td>${formatCost(inv.estimated_cost_usd)}</td>
+            <td>${statusBadge}</td>
+        `;
+
+        waterfallTableBody.appendChild(tr);
+    });
+}
+
+// Reveal System Identity button toggle
+revealIdentityBtn?.addEventListener("click", () => {
+    identitiesRevealed = !identitiesRevealed;
+    if (identitiesRevealed) {
+        revealIdentityBtn.innerHTML = `<span>🙈</span> Hide System Identity`;
+        revealIdentityBtn.classList.add("revealed");
+        if (identityA) identityA.hidden = false;
+        if (identityB) identityB.hidden = false;
+        showToast("System identities revealed.");
+    } else {
+        revealIdentityBtn.innerHTML = `<span>👁️</span> Reveal System Identity`;
+        revealIdentityBtn.classList.remove("revealed");
+        if (identityA) identityA.hidden = true;
+        if (identityB) identityB.hidden = true;
+        showToast("System identities blinded.");
+    }
+});
+
+// Refresh button for benchmark dashboard
+refreshBenchmarkBtn?.addEventListener("click", async () => {
+    showToast("Refreshing benchmark metrics...");
+    await loadBenchmarkDashboard(true);
+    showToast("Benchmark metrics up to date.");
 });
 
 // Initial bootstrap on page load

@@ -57,6 +57,18 @@
                 </div>
             </a>
 
+            <nav class="sidebar-nav">
+                <button id="navStudioBtn" class="nav-tab-btn active" type="button">
+                    <span class="nav-icon">✦</span>
+                    <span>Studio</span>
+                </button>
+                <button id="navBenchmarksBtn" class="nav-tab-btn" type="button">
+                    <span class="nav-icon">📊</span>
+                    <span>Benchmarks</span>
+                    <span class="nav-pill">Live</span>
+                </button>
+            </nav>
+
             <button
                 id="newRunButton"
                 class="new-run-button"
@@ -121,7 +133,8 @@
         </aside>
 
         <main class="main-content">
-            <header class="topbar">
+            <div id="studioView" class="view-panel active">
+                <header class="topbar">
                 <div>
                     <span class="eyebrow">
                         AgentPress Studio
@@ -454,6 +467,13 @@
                     >
                         Markdown
                     </button>
+
+                    <button
+                        id="telemetryTab"
+                        type="button"
+                    >
+                        Telemetry & Cost
+                    </button>
                 </div>
 
                 <div class="result-content">
@@ -483,8 +503,339 @@
                         class="markdown-output"
                         hidden
                     ></pre>
+
+                    <div
+                        id="telemetryOutput"
+                        class="telemetry-output"
+                        hidden
+                    >
+                        <div id="telemetryEmpty" class="empty-state">
+                            <div class="empty-icon">📊</div>
+                            <h3>No telemetry for this run</h3>
+                            <p>Generate a new writeup or open one from history with recorded model metrics.</p>
+                        </div>
+
+                        <div id="telemetryDetails" class="telemetry-details" hidden>
+                            <div class="telemetry-kpi-row">
+                                <div class="tel-kpi-card">
+                                    <span class="tel-kpi-label">Total Latency</span>
+                                    <strong id="liveTelLatency" class="tel-kpi-val">-</strong>
+                                </div>
+                                <div class="tel-kpi-card">
+                                    <span class="tel-kpi-label">Total Tokens</span>
+                                    <strong id="liveTelTokens" class="tel-kpi-val">-</strong>
+                                </div>
+                                <div class="tel-kpi-card">
+                                    <span class="tel-kpi-label">Estimated Cost</span>
+                                    <strong id="liveTelCost" class="tel-kpi-val">-</strong>
+                                </div>
+                                <div class="tel-kpi-card">
+                                    <span class="tel-kpi-label">Revision Loops</span>
+                                    <strong id="liveTelRevisions" class="tel-kpi-val">-</strong>
+                                </div>
+                            </div>
+
+                            <div class="tel-invocations-card">
+                                <h4>Pipeline Invocations Waterfall</h4>
+                                <div class="table-responsive">
+                                    <table class="benchmark-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Agent</th>
+                                                <th>Model</th>
+                                                <th>Latency</th>
+                                                <th>Prompt / Completion</th>
+                                                <th>Tokens</th>
+                                                <th>Cost (USD)</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="liveTelTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
+        </div><!-- /#studioView -->
+
+        <!-- Benchmark & Telemetry View -->
+        <div id="benchmarkView" class="view-panel" hidden>
+            <header class="topbar">
+                <div>
+                    <span class="eyebrow">Production Telemetry & Evaluation</span>
+                    <h1>Pipeline Benchmarking & Observability</h1>
+                </div>
+                <div class="benchmark-header-actions">
+                    <button id="refreshBenchmarkBtn" class="secondary-button" type="button">
+                        <span>↻</span> Refresh Metrics
+                    </button>
+                    <a href="/BENCHMARK_REPORT.md" target="_blank" class="secondary-button" style="text-decoration: none;">
+                        <span>📄</span> View Report
+                    </a>
+                </div>
+            </header>
+
+            <!-- Executive KPI Cards -->
+            <section class="benchmark-kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Token Overhead</span>
+                        <span class="kpi-badge warning">+667.2%</span>
+                    </div>
+                    <div class="kpi-value" id="kpiTokenVal">15,867 <small>vs 2,068</small></div>
+                    <p class="kpi-desc">Multi-agent drafting, critique loops, and fact-checking vs one-shot baseline.</p>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Latency Overhead</span>
+                        <span class="kpi-badge warning">+323.3%</span>
+                    </div>
+                    <div class="kpi-value" id="kpiLatencyVal">56.8s <small>vs 13.4s</small></div>
+                    <p class="kpi-desc">Parallel worker fan-out with iterative review rounds.</p>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Cost per Article</span>
+                        <span class="kpi-badge neutral">+426.3%</span>
+                    </div>
+                    <div class="kpi-value" id="kpiCostVal">$0.0259 <small>vs $0.0049</small></div>
+                    <p class="kpi-desc">Model-aware pricing across Gemini 2.5 Flash and Mistral Small.</p>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Depth & Expansion</span>
+                        <span class="kpi-badge success">+10.9%</span>
+                    </div>
+                    <div class="kpi-value" id="kpiWordsVal">935 <small>vs 843 words</small></div>
+                    <p class="kpi-desc">Richer substantive coverage with structured section progression.</p>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Circuit Breaker</span>
+                        <span class="kpi-badge success">100% Pass</span>
+                    </div>
+                    <div class="kpi-value">0 <small>/ 3 Unresolved</small></div>
+                    <p class="kpi-desc">Zero unbounded loops; capped at 3 max revision iterations.</p>
+                </div>
+            </section>
+
+            <!-- Visual Comparison Bars -->
+            <section class="benchmark-section-card">
+                <div class="benchmark-section-header">
+                    <div>
+                        <h3>Empirical Overhead Analysis</h3>
+                        <p class="section-subtext">Quantified trade-offs comparing Vanilla Baseline against the Multi-Agent Pipeline.</p>
+                    </div>
+                    <span class="benchmark-tag">Baseline vs. Multi-Agent</span>
+                </div>
+                <div class="comparison-bars-container">
+                    <div class="comparison-bar-row">
+                        <div class="bar-meta">
+                            <span class="bar-label">Total Tokens</span>
+                            <span class="bar-nums"><strong>Baseline: 6,205</strong> | <strong>Pipeline: 47,602</strong> (+667.2%)</span>
+                        </div>
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill baseline" style="width: 13%;"></div>
+                            <div class="progress-bar-fill pipeline" style="width: 87%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="comparison-bar-row">
+                        <div class="bar-meta">
+                            <span class="bar-label">Average Latency</span>
+                            <span class="bar-nums"><strong>Baseline: 13.4s</strong> | <strong>Pipeline: 56.8s</strong> (+323.3%)</span>
+                        </div>
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill baseline" style="width: 23%;"></div>
+                            <div class="progress-bar-fill pipeline" style="width: 77%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="comparison-bar-row">
+                        <div class="bar-meta">
+                            <span class="bar-label">Estimated Model Cost</span>
+                            <span class="bar-nums"><strong>Baseline: $0.0148</strong> | <strong>Pipeline: $0.0778</strong> (+426.3%)</span>
+                        </div>
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill baseline" style="width: 19%;"></div>
+                            <div class="progress-bar-fill pipeline" style="width: 81%;"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Seed Topics Performance Table -->
+            <section class="benchmark-section-card">
+                <div class="benchmark-section-header">
+                    <div>
+                        <h3>Seed Topics Performance</h3>
+                        <p class="section-subtext">Click on any topic row to inspect its side-by-side A/B outputs and execution waterfall.</p>
+                    </div>
+                    <span id="topicCountBadge" class="benchmark-tag">3 Topics Evaluated</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="benchmark-table" id="benchmarkTopicsTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Topic</th>
+                                <th>Baseline Tokens</th>
+                                <th>Pipeline Tokens</th>
+                                <th>Overhead</th>
+                                <th>Revisions</th>
+                                <th>Pipeline Cost</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="benchmarkTopicsTableBody">
+                            <!-- Populated dynamically via app.js -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Blinded A/B Output Reviewer -->
+            <section class="benchmark-section-card" id="abReviewSection">
+                <div class="benchmark-section-header ab-header">
+                    <div>
+                        <h3>Blinded A/B Output Reviewer</h3>
+                        <p class="section-subtext" id="abSelectedTopicTitle">Loading topic evaluation...</p>
+                    </div>
+                    <div class="ab-controls">
+                        <select id="abTopicSelect" class="editorial-select">
+                            <!-- options populated dynamically -->
+                        </select>
+                        <button id="revealIdentityBtn" class="reveal-btn" type="button">
+                            <span>👁️</span> Reveal System Identity
+                        </button>
+                    </div>
+                </div>
+
+                <div class="ab-split-grid">
+                    <!-- System A Card -->
+                    <div class="ab-card" id="abCardA">
+                        <div class="ab-card-header">
+                            <div>
+                                <span class="ab-badge">System A</span>
+                                <span class="identity-tag" id="identityA" hidden>Multi-Agent Pipeline</span>
+                            </div>
+                            <div class="ab-meta-pills" id="abMetaA">
+                                <span>- words</span>
+                                <span>- tokens</span>
+                                <span>- cost</span>
+                            </div>
+                        </div>
+                        <div class="ab-card-content article-preview" id="abContentA">
+                            <!-- Rendered markdown A -->
+                        </div>
+                    </div>
+
+                    <!-- System B Card -->
+                    <div class="ab-card" id="abCardB">
+                        <div class="ab-card-header">
+                            <div>
+                                <span class="ab-badge">System B</span>
+                                <span class="identity-tag" id="identityB" hidden>Vanilla Baseline</span>
+                            </div>
+                            <div class="ab-meta-pills" id="abMetaB">
+                                <span>- words</span>
+                                <span>- tokens</span>
+                                <span>- cost</span>
+                            </div>
+                        </div>
+                        <div class="ab-card-content article-preview" id="abContentB">
+                            <!-- Rendered markdown B -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 25-Point Rubric Guide -->
+                <div class="rubric-box">
+                    <div class="rubric-title">25-Point Blinded Human Evaluation Rubric (1–5 scale per criterion)</div>
+                    <div class="rubric-grid">
+                        <div class="rubric-item">
+                            <strong>1. Factual Accuracy</strong>
+                            <span>Appropriate uncertainty, zero hallucinated facts or citations.</span>
+                        </div>
+                        <div class="rubric-item">
+                            <strong>2. Logical Structure</strong>
+                            <span>Seamless transitions, coherent narrative progression.</span>
+                        </div>
+                        <div class="rubric-item">
+                            <strong>3. Depth & Specificity</strong>
+                            <span>Nuanced trade-offs, concrete engineering examples.</span>
+                        </div>
+                        <div class="rubric-item">
+                            <strong>4. Prose Quality</strong>
+                            <span>Conversational warmth, burstiness, zero AI cliches.</span>
+                        </div>
+                        <div class="rubric-item">
+                            <strong>5. Practical Utility</strong>
+                            <span>Actionable implementation advice and design clarity.</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Per-Agent Telemetry Waterfall -->
+            <section class="benchmark-section-card">
+                <div class="benchmark-section-header">
+                    <div>
+                        <h3>Per-Agent Execution Waterfall</h3>
+                        <p class="section-subtext" id="waterfallSubtitle">Agent invocation sequence and token/cost breakdown for the selected topic.</p>
+                    </div>
+                    <span id="waterfallTotalCost" class="benchmark-tag">$0.0000 Total</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="benchmark-table waterfall-table">
+                        <thead>
+                            <tr>
+                                <th>Step</th>
+                                <th>Agent / Component</th>
+                                <th>Model</th>
+                                <th>Latency</th>
+                                <th>Prompt Tok</th>
+                                <th>Completion Tok</th>
+                                <th>Total Tok</th>
+                                <th>Cost (USD)</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="waterfallTableBody">
+                            <!-- Populated dynamically via app.js -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Architecture & Takeaways -->
+            <section class="benchmark-section-card">
+                <div class="benchmark-section-header">
+                    <h3>Engineering Takeaways & Methodology</h3>
+                </div>
+                <div class="takeaways-grid">
+                    <div class="takeaway-card">
+                        <h4>Non-Linear Multi-Agent Architecture</h4>
+                        <p>Unlike linear chains, AgentPress orchestrates an Editor and Fact-Checker critique loop with a 3-iteration circuit breaker to guarantee termination without unbounded token spend.</p>
+                    </div>
+                    <div class="takeaway-card">
+                        <h4>Quantified Quality vs. Cost Trade-off</h4>
+                        <p>The multi-agent system incurs +667.2% token and +323.3% latency overhead, investing compute in parallel drafting, critique, and factual verification to eliminate hallucinations.</p>
+                    </div>
+                    <div class="takeaway-card">
+                        <h4>Production Telemetry</h4>
+                        <p>Every node records model-aware token usage and latency, allowing precise dollar-cost accounting per agent and transparent fallback tracking across providers.</p>
+                    </div>
+                </div>
+            </section>
+        </div><!-- /#benchmarkView -->
         </main>
     </div>
 
