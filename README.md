@@ -2,7 +2,7 @@
 
 A multi-agent long-form writing platform that researches, outlines, parallel-drafts, reviews, fact-checks, and illustrates long-form content using LangGraph, FastAPI, and Docker. The project includes a completed, telemetry-backed benchmark against a one-shot LLM baseline—not just an architecture demo.
 
-[Benchmark Results](#benchmark-results-primary-evidence) • [Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Review Loop Deep Dive](#review-loop-deep-dive) • [Observability](#observability-and-benchmarking) • [Getting Started](#getting-started-locally)
+[Benchmark Results](#benchmark-results-primary-evidence) • [Benchmark UI](#benchmark-dashboard-and-ab-evaluation-ui) • [Live Deployment](http://ec2-13-235-67-247.ap-south-1.compute.amazonaws.com:8001/) • [Architecture Overview](#architecture-overview) • [Backend Architecture (`backend.py`)](#backend-architecture-backendpy) • [Review Loop Deep Dive](#review-loop-deep-dive) • [Observability](#observability-and-benchmarking) • [Getting Started](#getting-started-locally)
 
 ---
 
@@ -31,6 +31,16 @@ All generated benchmark artifacts are checked into the repository for inspection
 - **[Raw benchmark telemetry](benchmark_results.jsonl):** machine-readable prompts, outputs, per-agent invocation metrics, token counts, latency, model identity, estimated cost, and final metadata for every completed pair.
 
 The benchmark profile targets two ~300-word pipeline sections, a matched baseline length, and at most one benchmark revision to conserve API quota. The production workflow still enforces its full three-revision circuit breaker.
+
+### Benchmark Dashboard and A/B Evaluation UI
+
+The AgentPress web client includes an interactive observability and evaluation suite for inspecting benchmark telemetry and comparing outputs directly:
+
+![Pipeline Benchmarking & Observability Dashboard](images/benchmark_dashboard_kpis.png)
+*Figure 1: Pipeline Benchmarking & Observability Dashboard showing executive KPI cards (Token Overhead: +667.2%, Latency Overhead: +323.3%, Cost per Article: +426.3%, Depth & Expansion: +10.9%, and Circuit Breaker resolution) alongside the Empirical Overhead Analysis comparison progress bars.*
+
+![Seed Topics Performance & Blinded A/B Output Reviewer](images/benchmark_ab_reviewer.png)
+*Figure 2: Seed Topics Performance Table and Blinded A/B Output Reviewer. Evaluators inspect side-by-side blinded deliverables (System A vs. System B) with real-time word count, token count, and cost breakdown pills, supported by an interactive "Reveal System Identity" toggle and 25-point evaluation rubric.*
 
 ---
 

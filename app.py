@@ -13,7 +13,7 @@ from typing import Any, Generator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -1293,8 +1293,127 @@ def get_benchmark_topics():
         })
 
     return results
+ 
+ 
+@app.get("/BENCHMARK_REPORT.md")
+@app.get("/api/benchmark/report")
+def get_benchmark_report(request: Request, raw: bool = False):
+    """
+    Serves the aggregate benchmark report. Returns an HTML rendered view
+    when accessed from a browser, or raw markdown if requested or via curl.
+    """
+    report_path = BASE_DIR / "BENCHMARK_REPORT.md"
+    if not report_path.is_file():
+        raise HTTPException(status_code=404, detail="Benchmark report not found.")
+
+    markdown_content = report_path.read_text(encoding="utf-8")
+    accept = request.headers.get("accept", "")
+
+    if raw or "text/html" not in accept:
+        return PlainTextResponse(markdown_content, media_type="text/plain; charset=utf-8")
+
+    escaped_markdown = json.dumps(markdown_content)
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentPress - Benchmark Report</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        body {{
+            background: #07100e;
+            color: #f5faf7;
+            font-family: 'DM Sans', sans-serif;
+            padding: 40px 20px 80px;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+        }}
+        .report-container {{
+            max-width: 880px;
+            width: 100%;
+            background: rgba(15, 28, 25, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 40px 48px;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.4);
+        }}
+        .report-nav {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 28px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }}
+        .back-link, .raw-link {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--primary, #83f5b5);
+            text-decoration: none;
+            font-size: 13.5px;
+            font-weight: 600;
+        }}
+        .back-link:hover, .raw-link:hover {{
+            text-decoration: underline;
+        }}
+        .article-preview table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 13.5px;
+        }}
+        .article-preview th {{
+            background: rgba(255, 255, 255, 0.04);
+            color: #8fa39c;
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }}
+        .article-preview td {{
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }}
+    </style>
+</head>
+<body>
+    <div class="report-container">
+        <div class="report-nav">
+            <a href="/" class="back-link">← Return to Studio</a>
+            <a href="/BENCHMARK_REPORT.md?raw=true" class="raw-link" target="_blank">View Raw Markdown (.md)</a>
+        </div>
+        <div id="reportContent" class="article-preview"></div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <script>
+        const rawMd = {escaped_markdown};
+        if (window.marked && window.DOMPurify) {{
+            document.getElementById('reportContent').innerHTML = DOMPurify.sanitize(marked.parse(rawMd));
+        }} else {{
+            document.getElementById('reportContent').textContent = rawMd;
+        }}
+    </script>
+</body>
+</html>"""
+    return HTMLResponse(html_content)
 
 
+@app.get("/BENCHMARK_OUTPUTS.md")
+@app.get("/api/benchmark/outputs")
+def get_benchmark_outputs():
+    """
+    Serves the blinded A/B outputs comparison file.
+    """
+    outputs_path = BASE_DIR / "BENCHMARK_OUTPUTS.md"
+    if not outputs_path.is_file():
+        raise HTTPException(status_code=404, detail="Benchmark outputs not found.")
+    return PlainTextResponse(outputs_path.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8")
 
 
 if __name__ == "__main__":

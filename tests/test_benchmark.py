@@ -37,6 +37,17 @@ class BenchmarkEndpointTests(unittest.TestCase):
             self.assertIn("identity", t["system_b"])
             self.assertTrue(len(t["pipeline_invocations"]) >= 10)
 
+    def test_benchmark_report_endpoint(self):
+        # HTML browser view
+        res_html = self.client.get("/BENCHMARK_REPORT.md", headers={"accept": "text/html"})
+        self.assertEqual(res_html.status_code, 200)
+        self.assertIn("AgentPress - Benchmark Report", res_html.text)
+
+        # Raw markdown view
+        res_raw = self.client.get("/BENCHMARK_REPORT.md?raw=true")
+        self.assertEqual(res_raw.status_code, 200)
+        self.assertIn("# AgentPress Benchmark Report", res_raw.text)
+
 
 if __name__ == "__main__":
     unittest.main()
