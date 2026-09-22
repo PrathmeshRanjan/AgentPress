@@ -11,11 +11,12 @@ __pycache__
 .env.*
 !.env.example
 notebooks
-images/*.png
 outputs/*
 .DS_Store
 .idea
 .vscode
 *.md
 !README.md
+!BENCHMARK_REPORT.md
+!BENCHMARK_OUTPUTS.md
 
